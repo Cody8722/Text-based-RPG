@@ -518,9 +518,9 @@ def build_cloud_option_prompt(options: list[dict]) -> str:
         if opt["type"] in ("npc", "npc_scripted"):
             npc = NPCS[opt["target"]]
             tier = affinity_tier(state["npcs"][opt["target"]]["affinity"])
-            lines.append(f'- （對象：{npc["name"]}，目前關係：{tier}）核心意圖："{opt["text"]}"')
+            lines.append(f'- [id={opt["id"]}] （對象：{npc["name"]}，目前關係：{tier}）核心意圖："{opt["text"]}"')
         else:
-            lines.append(f'- （場景行動，不針對特定角色）核心意圖："{opt["text"]}"')
+            lines.append(f'- [id={opt["id"]}] （場景行動，不針對特定角色）核心意圖："{opt["text"]}"')
     intents_text = "\n".join(lines)
     scene_name = SCENES[state["location"]]["name"]
     return f"""你在幫一款文字冒險遊戲產生選單文字。這是玩家目前站在「{scene_name}」裡，可以做的幾種固定互動，每種互動背後的核心意圖不會變，你的工作是幫每一種意圖換一種新鮮的說法，讓同一個意圖用不同的話講出來，讀起來像是這個當下、這個關係狀態會自然說出的話。
@@ -528,7 +528,31 @@ def build_cloud_option_prompt(options: list[dict]) -> str:
 【固定的互動意圖，依序是】
 {intents_text}
 
-輸出格式是一個 JSON 物件，裡面有一個 "options" 陣列，依照上面的順序放對應的新句子，每句話長度跟原句差不多，繁體中文，只包含文字與標點符號。只輸出 JSON，不要有 JSON 以外的文字或說明。"""
+輸出格式是一個 JSON 物件，裡面有一個 "options" 陣列，陣列裡每個元素是 {{"id": 上面方括號裡的 id, "text": 對應的新句子}}，每個 id 恰好出現一次，每句話長度跟原句差不多，繁體中文，只包含文字與標點符號。只輸出 JSON，不要有 JSON 以外的文字或說明。"""
+
+
+CLOUD_TEXT_MAX_LEN = 120
+
+
+def parse_cloud_options(raw, options: list[dict]) -> list[str] | None:
+    """驗證雲端回傳的結構，回傳「依 Python 選項順序排好」的顯示文字；任何異常一律回傳 None（呼叫端 fallback）。
+    雲端文字只用來顯示，所以這裡的驗證只負責結構（型別、id 對得上、不重複、非空、長度）；
+    文字語意是否貼近原意圖 Python 無法驗證，也不需要驗證——選項的行為由 Python 的選項資料決定，與這些文字無關"""
+    if not isinstance(raw, list) or len(raw) != len(options):
+        return None
+    by_id: dict[str, str] = {}
+    for item in raw:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not isinstance(item.get("text"), str):
+            return None
+        if item["id"] in by_id:
+            return None
+        text = " ".join(strip_residue(item["text"]).split())  # 收斂成單行
+        if not text or len(text) > CLOUD_TEXT_MAX_LEN:
+            return None
+        by_id[item["id"]] = text
+    if set(by_id) != {opt["id"] for opt in options}:
+        return None
+    return [by_id[opt["id"]] for opt in options]
 
 
 def call_cloud_option_llm(options: list[dict]) -> list[str] | None:
@@ -552,21 +576,31 @@ def call_cloud_option_llm(options: list[dict]) -> list[str] | None:
         )
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"]
-        texts = parse_llm_json(content).get("options", [])
-        if len(texts) != len(options):
-            print(f"[選項文字雲端生成數量不對（預期{len(options)}個，收到{len(texts)}個），改用預設選項]")
-            return None
-        return [strip_residue(t) for t in texts]
+        texts = parse_cloud_options(parse_llm_json(content).get("options"), options)
+        if texts is None:
+            print("[選項文字雲端生成結構異常（型別、id 或數量對不上），改用預設選項]")
+        return texts
     except Exception as e:
         print(f"[選項文字雲端生成失敗，改用預設選項：{e}]")
         return None
+
+
+def is_scripted_option_completed(opt: dict) -> bool:
+    # npc_scripted 的成功結果會設一個旗標（outcome_above["flag"]），旗標已設代表這件事已經發生過。
+    # 這類是一次性、不可逆的劇情轉換：完成後選項不再出現，避免重複拿好感度/prowess。
+    # 失敗（outcome_below）不設旗標，所以失敗後選項仍在，可以再試——維持原本的設計
+    if opt.get("type") != "npc_scripted":
+        return False
+    done_flag = opt["outcome_above"].get("flag")
+    return bool(done_flag and state["player"]["flags"].get(done_flag))
 
 
 def get_visible_options(scene_options: list[dict]) -> list[dict]:
     return [
         opt
         for opt in scene_options
-        if "requires_flag" not in opt or state["player"]["flags"].get(opt["requires_flag"])
+        if ("requires_flag" not in opt or state["player"]["flags"].get(opt["requires_flag"]))
+        and not is_scripted_option_completed(opt)
     ]
 
 
@@ -574,7 +608,9 @@ def render_options() -> list[dict]:
     current_options = get_visible_options(SCENES[state["location"]]["options"])
     fresh_texts = call_cloud_option_llm(current_options)
     if fresh_texts:
-        return [{**opt, "text": t} for opt, t in zip(current_options, fresh_texts)]
+        # 雲端措辭只放進 display_text（純顯示）；id／type／target／text（意圖）都維持 Python 原值，
+        # main() 的行為與送進 Call1／history 的 action 一律讀原值，玩家選的 index 對應的永遠是 Python 的選項
+        return [{**opt, "display_text": t} for opt, t in zip(current_options, fresh_texts)]
     return current_options
 
 
@@ -604,9 +640,26 @@ def embed_text(text: str) -> list[float]:
     return resp.json()["embeddings"][0]
 
 
+MEMORY_TEXT_MAX_LEN = 200
+
+
+def sanitize_memory_text(text: str) -> str:
+    # 記憶文字會被原樣放進未來的 system prompt：收斂成單行、拿掉【】，避免偽造 prompt 區塊標題
+    # （例如 Python 才會產生的「【你們之間確實發生過的事】」），並限制長度
+    return " ".join(text.replace("【", " ").replace("】", " ").split())[:MEMORY_TEXT_MAX_LEN]
+
+
+def scripted_memory_note(outcome: dict) -> str:
+    # npc_scripted 回合的永久記憶由 Python 依「已確定的結果」建立：直接用該結果自己的 hint
+    # （靜態、第三人稱的事實句，成功/失敗各自一句），不採用 Call1 自由撰寫的 memory_note，
+    # 這樣 LLM 無法讓記憶描述出與 authoritative outcome 不符的事件
+    return sanitize_memory_text(outcome["hint"])
+
+
 def write_memory(turn_count: int, npc_id: str, text: str) -> None:
     if not MEMORY_ENABLED:
         return
+    text = sanitize_memory_text(text)
     if not text:
         print("[這回合沒有可用的記憶摘要，跳過長期記憶寫入]")
         return
@@ -724,7 +777,7 @@ def build_system_prompt(
     )
     memory_section = ""
     if memories:
-        memory_text = "\n".join(f"- {m}" for m in memories)
+        memory_text = "\n".join(f"- {sanitize_memory_text(m)}" for m in memories)  # 讀取端也淨化，涵蓋舊版已存進 Qdrant 的資料
         memory_section = (
             "\n【你還記得的一些事】\n"
             f"以下是你零星記得的一些片段，會自然影響你現在的反應，不用刻意提起：\n{memory_text}\n"
@@ -776,6 +829,7 @@ def call_narrative_llm(
     scripted_outcome: str | None = None,
     flavor_hint: str | None = None,
 ) -> dict:
+    # history 的語意是「玩家實際經歷過的回合」：這個函式只讀，不寫；寫入由 commit_turn_history() 在整個回合成功後才做
     history = conversation_history[target_npc_id]
     recent_narratives = get_recent_narratives(target_npc_id, 2)
     query_text = " ".join([player_action, *recent_narratives])
@@ -806,17 +860,26 @@ def call_narrative_llm(
     # 這裡刻意過濾 LLM_ASSIGNABLE_FLAGS（比 FLAG_WHITELIST 窄），雙重保險：
     # 即使 Ollama 的 schema enum 約束被繞過，Python 這層還是不會放行 Call1 不該自己決定的旗標（例如 mentioned_wang_debt）
     flags_set = [f for f in parsed.get("flags_set", []) if f in LLM_ASSIGNABLE_FLAGS]
-    history.append(user_message)
+    return {"narrative": narrative, "memory_note": memory_note, "flags_set": flags_set}
+
+
+def commit_turn_history(target_npc_id: str, player_action: str, narrative_result: dict) -> None:
+    history = conversation_history[target_npc_id]
+    history.append({"role": "user", "content": f"玩家的動作：{player_action}"})
     # 存清理後的版本，不是原始 content，避免殘渣透過對話歷史被模型參考模仿
     history.append(
         {
             "role": "assistant",
             "content": json.dumps(
-                {"narrative": narrative, "memory_note": memory_note, "flags_set": flags_set}, ensure_ascii=False
+                {
+                    "narrative": narrative_result["narrative"],
+                    "memory_note": narrative_result["memory_note"],
+                    "flags_set": narrative_result["flags_set"],
+                },
+                ensure_ascii=False,
             ),
         }
     )
-    return {"narrative": narrative, "memory_note": memory_note, "flags_set": flags_set}
 
 
 def call_affinity_llm(narrative: str, target_npc_id: str) -> int:
@@ -901,7 +964,7 @@ def main() -> None:
     while True:
         print("\n你可以：")
         for i, opt in enumerate(display_options, 1):
-            print(f"  {i}. {opt['text']}")
+            print(f"  {i}. {opt.get('display_text', opt['text'])}")
         print("  0. 離開遊戲（結束）")
 
         choice = input("\n> 你的選擇（輸入數字）：").strip()
@@ -947,18 +1010,26 @@ def main() -> None:
             success = resolve_scripted_outcome(base_rate, prowess_bonus)
             outcome = option["outcome_above"] if success else option["outcome_below"]
 
+            # outcome 已經由 Python 決定（骰已擲出），從這裡開始 authoritative：Call1 只負責把它講成故事，
+            # 它失敗（連不上、逾時、解析失敗、回傳空敘事）都不能讓這個 outcome 消失，否則玩家可以重選、重擲。
+            # 備援敘事直接用 outcome 自己的 hint（Python 寫的第三人稱事實句）
             try:
                 narrative_result = call_narrative_llm(
                     action, target_npc_id, ask_count, scripted_outcome=outcome["hint"]
                 )
-            except requests.exceptions.ConnectionError:
-                print("[連不上 Ollama，確認 `ollama serve` 有在跑，或模型已經 pull 好]")
-                continue
+                narrative = narrative_result["narrative"]
+                if not narrative.strip():
+                    raise ValueError("Call1 回傳空敘事")
             except Exception as e:
-                print(f"[生成失敗，稍後再試：{e}]")
-                continue
+                print(f"[敘事生成失敗，改用規則備援敘事，結果照常套用：{e}]")
+                narrative = outcome["hint"]
 
-            print_typewriter(narrative_result.get("narrative", f"（{npc_name}沉默不語。）"))
+            print_typewriter(narrative)
+            # 玩家已看到這段敘事，才算進 history；memory_note 一律用 Python 建立的版本，LLM 的自由文字不進 history/Qdrant
+            memory_note = scripted_memory_note(outcome)
+            commit_turn_history(
+                target_npc_id, action, {"narrative": narrative, "memory_note": memory_note, "flags_set": []}
+            )
 
             if outcome["flag"]:
                 apply_flags([outcome["flag"]])
@@ -967,7 +1038,7 @@ def main() -> None:
                 option_id,
                 ask_count,
                 outcome["delta"],
-                narrative_result.get("memory_note", ""),
+                memory_note,
                 prowess_growth=outcome.get("grow_prowess", False),
             )
 
@@ -1003,6 +1074,7 @@ def main() -> None:
             continue
 
         print_typewriter(result.get("narrative", f"（{npc_name}沉默不語。）"))
+        commit_turn_history(target_npc_id, action, result)  # Call1+Call2 都成功、玩家也看到了，才算進 history
 
         # 見 9.1 節：白名單防線，schema 外的值一律視為 0，不信任模型自己會守規矩
         delta = result.get("affinity_delta", 0)
