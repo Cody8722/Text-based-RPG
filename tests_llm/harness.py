@@ -14,7 +14,7 @@ import os
 import statistics
 import time
 
-from rpg.narrator import Narrator, REWRITE_KINDS
+from rpg.narrator import Narrator, REWRITE_KINDS, check
 
 from . import contract, scenarios
 
@@ -58,6 +58,32 @@ def run_scenario(sc: scenarios.Scenario, narrator: Narrator | None, narrated_tur
             break
     return {"scenario": sc.name, "about": sc.about, "turns": turns, "hash_mismatch": hash_mismatch,
             "shadow_mismatch": shadow_mismatch, "seconds": round(time.monotonic() - started, 1)}
+
+
+def rescore(results: list[dict]) -> list[dict]:
+    """不呼叫模型：把一次真實執行記下的模型原文，用「現在的」驗證器與檢查器重新判定一遍。
+    世界是確定的，所以每回合的情境可以原樣重建。調驗證器時用這個，幾秒鐘就知道退回率會怎麼變。"""
+    out = []
+    for r in results:
+        sc = scenarios.BY_NAME[r["scenario"]]
+        recorded = {t["step"]: t for t in r["turns"]}
+        last = max(recorded) if recorded else -1
+        turns = []
+        for step, (w, aid, beats) in enumerate(scenarios.iterate(sc)):
+            if step > last:
+                break
+            t = dict(recorded[step])
+            if aid != t["action"]:
+                raise RuntimeError(f"{r['scenario']} step {step}: replay diverged ({aid} != {t['action']})")
+            if "source" in t and t["reason"] != "error":
+                ctx = Narrator.build_context(w, beats)
+                text, reason = check(t["raw"], ctx)
+                t.update(source="llm" if text else "template", reason=reason, shown=text or ctx["template"],
+                         raw_violations=contract.audit(t["raw"], ctx, w),
+                         shown_violations=contract.audit(text or ctx["template"], ctx, w))
+            turns.append(t)
+        out.append({**r, "turns": turns})
+    return out
 
 
 # ---------------------------------------------------------------- 統計

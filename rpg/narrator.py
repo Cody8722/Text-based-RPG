@@ -106,23 +106,24 @@ TIME_ALLOWED = {
     0: {"dawn", "morning", "daylight"}, 1: {"dawn", "morning", "daylight"}, 2: {"noon", "afternoon", "daylight"},
     3: {"afternoon", "dusk", "daylight"}, 4: {"dusk", "night"}, 5: {"night"},
 }
-_RAIN = ["下雨", "雨絲", "細雨", "雨聲", "雨點", "雨幕", "大雨", "小雨", "撐傘", "雨水", "陰雨"]
+_RAIN = ["下雨", "雨絲", "細雨", "雨聲", "雨點", "雨幕", "大雨", "小雨", "撐傘", "雨水", "陰雨", "滂沱"]
 _SUN = ["陽光普照", "艷陽", "晴空", "萬里無雲", "陽光燦爛", "晴朗", "烈日"]
 WEATHER_CONTRADICTS = {"晴": _RAIN, "雨": _SUN, "陰": _SUN + ["下雨", "雨絲", "細雨", "大雨", "撐傘"]}
 COMPANION_WORDS = ["你們幾", "你們一行", "你們兩", "你們三", "同伴", "同行的", "一行人", "你們一夥"]
+# 「只被提到的人」後面緊跟著這些動作 → 被寫成在場了（實測：句子裡別人的「身邊」不能算，要緊跟在名字後面）
 PRESENCE_WORDS = ["走到", "走過來", "走了過來", "走進", "走來", "站在", "坐在", "來到", "湊過來", "湊近", "朝你", "向你",
-                  "對你", "拍了拍", "遞給", "看著你", "看了你", "點了點頭", "開口", "說道", "插嘴", "在一旁", "身旁", "身邊", "迎上"]
+                  "對你", "拍了拍", "遞給", "看著你", "看了你", "點了點頭", "開口", "說道", "插嘴", "在一旁", "迎上", "笑著"]
+_PRESENCE_GAP = "也便正就又還已緩慢慢悠悠忽然突然"
 ARRIVAL_WORDS = ["映入眼簾", "第一次來到", "初來乍到"]   # 再加上「來到／走進／踏進＋這個地方的名字」，見 check()
 PLACE_NAMES = sorted({p["name"] for p in LOCATIONS.values()}, key=len, reverse=True)
 # 名字剛好也是普通名詞的鎮民：前面接量詞時是東西，不是人（「每一塊石頭」）
 COMMON_WORD_NAMES = {"石頭": "塊顆粒堆些"}
 EVENT_WORDS = ["過世", "死了", "斷氣", "被抓", "抓進", "偷走", "偷了", "打傷", "揍了", "起火", "走水", "失火", "拔刀",
-               "殺", "鮮血", "流血", "昏倒", "搶走", "搶了", "報官"]
+               "殺了", "被殺", "殺人", "鮮血", "流血", "昏倒", "搶走", "搶了", "報官"]   # 單字「殺」會誤中「肅殺」
 # 簡體專用字（繁體文章裡不會出現的寫法）。只收沒有歧義的字。
 SIMPLIFIED = set("这说时来为们会对过还没发现开关问应见长门马鸟车东头话让认谁读请边远进运难国实样种动点从两无与气号爷杂"
                  "钱银铁饭卖买鸡听声灯烟闻阳阴广场观欢华归乡亲爱脸热烧转轻递缓惊叹继续张刘赵孙吴陈苏冯闲间别么视线经"
-                 "给红绿结终纸细织网风飞页题顾预领颜额闪阵际随队阶陆险汉沟泪浓涌满测济药医伤价仅侧摊柜馆师岁")
-_SENT = re.compile(r"[^。！？\n]+")
+                 "给红绿结终纸细织网风飞页题顾预领颜额闪阵际随队阶陆险汉沟泪浓涌满测济药医伤价仅侧摊柜馆师岁镇")
 
 
 def without_places(text: str) -> str:
@@ -149,6 +150,17 @@ def quotes_kept(template: str, text: str) -> bool:
         if not any("".join(out[i:j]) == q for i in range(len(out)) for j in range(i + 1, min(len(out), i + 4) + 1)):
             return False
     return True
+
+
+def acts_on_stage(text: str, name: str) -> bool:
+    """name 後面（隔著幾個副詞）緊跟著在場的動作：「周秀才慢慢走了過來」。"""
+    i = text.find(name)
+    while i >= 0:
+        rest = text[i + len(name):].lstrip(_PRESENCE_GAP)
+        if any(rest.startswith(p) for p in PRESENCE_WORDS):
+            return True
+        i = text.find(name, i + 1)
+    return False
 
 
 def narration_only(text: str) -> str:
@@ -221,9 +233,8 @@ def check(output, ctx: dict) -> tuple[str | None, str | None]:
     if new(COMPANION_WORDS):
         return None, "companions"
     for name in ctx.get("absent", []):
-        for sent in _SENT.findall(said):
-            if name in sent and any(p in sent for p in PRESENCE_WORDS):
-                return None, "absent_on_stage"
+        if acts_on_stage(said, name):
+            return None, "absent_on_stage"
     if "place" in ctx and not ctx.get("arrived"):
         here = LOCATIONS[ctx["place"]]["name"]
         again = ARRIVAL_WORDS + [v + here for v in ("來到", "走進", "踏進", "踏入", "走到")]

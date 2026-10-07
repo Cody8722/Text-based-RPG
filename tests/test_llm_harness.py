@@ -128,6 +128,20 @@ class ContractTests(unittest.TestCase):
                     self.assertIsNone(shown, f"validator let a '{cat}' violation through")
                     self.assertIsNotNone(reason)
 
+    def test_validator_word_lists_cover_the_checker(self):
+        """檢查器會抓的每個詞，production 驗證器都要認得（不然那個詞的越界就會漏給玩家）。"""
+        import rpg.narrator as N
+
+        self.assertLessEqual(contract.SIMPLIFIED, N.SIMPLIFIED)
+        for period, words in contract.TIME_CLASH.items():
+            banned = {x for g, ws in N.TIME_WORDS.items() if g not in N.TIME_ALLOWED[period] for x in ws}
+            self.assertLessEqual(set(words), banned, period)
+        for wx, words in contract.WEATHER_CLASH.items():
+            self.assertLessEqual(set(words), set(N.WEATHER_CONTRADICTS[wx]), wx)
+        self.assertLessEqual(set(contract.COMPANIONS), set(N.COMPANION_WORDS))
+        self.assertLessEqual(set(contract.EVENTS), set(N.EVENT_WORDS))
+        self.assertLessEqual(set(contract.PRESENCE), set(N.PRESENCE_WORDS))
+
     def test_free_retelling_is_not_a_violation(self):
         """自由改寫（加動作、神情、氣氛，台詞照抄）不算越界——測試不要求任何特定句子。"""
         for name, aid, ctx, w in self._cases():
@@ -199,6 +213,9 @@ class FakeModelRunTests(unittest.TestCase):
         self.assertIn("companions", s["raw_violations"])
         self.assertIn("time", s["raw_violations"])
         self.assertGreater(s["errors"], 0, "a non-JSON reply is an error, shown as the template")
+        again = harness.summarize(harness.rescore(json.loads(json.dumps(results))), model="fake")
+        for k in ("llm_calls", "accepted", "fallback", "errors", "shown_violations"):
+            self.assertEqual(again[k], s[k], f"rescoring a recorded run with the same validator changes nothing ({k})")
         report = harness.format_report(s)
         for word in ("LLM calls", "accepted", "fallback", "Reached the player"):
             self.assertIn(word, report)

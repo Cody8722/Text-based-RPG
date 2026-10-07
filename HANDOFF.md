@@ -152,6 +152,7 @@ python -m tests_llm                    # 全部情境＋連續遊玩 60 個說�
 python -m tests_llm --long-turns 100   # 連續遊玩跑久一點
 python -m tests_llm --only time absent # 只跑名稱含這些字的測試
 python -m tests_llm --require          # Ollama 不可用時結束碼 3（給要強制跑的場合）
+python -m tests_llm --rescore tests_llm/reports/latest.json   # 不呼叫模型：用現在的驗證器重判上次記錄的模型原文（調驗證器用，幾秒鐘）
 pytest -m llm -s                       # 同一套，用 pytest 跑
 ```
 
@@ -161,6 +162,8 @@ pytest -m llm -s                       # 同一套，用 pytest 跑
 - 情境是確定的（`tests_llm/scenarios.py`：剛抵達後停留、純對話、談到不在場的人、多人在場、有私密設定、六個時辰×天氣、固定 seed 連續遊玩）。
 - 跑完印出統計（接受率、退回率與原因、模型原始輸出各類越界次數、有沒有漏到玩家眼前、延遲、連續遊玩前後半段退回率），
   逐回合完整紀錄（prompt、模型原文、顯示文字、判定）寫到 `tests_llm/reports/latest.json`。調提示或驗證器時先看這份。
+- 報告裡「Rejected though the checker saw nothing」是驗證器可能太嚴的地方；「Reached the player」必須是 0，不是 0 就是驗證器的缺口。
+  改驗證器之後先 `--rescore` 看兩個數字怎麼變，再決定要不要重跑真模型。
 - 環境變數：`RPG_OLLAMA_URL`、`RPG_MODEL`、`RPG_LLM_TIMEOUT`（預設 180 秒）、`RPG_LLM_LONG_TURNS`、`RPG_LLM_MIN_ACCEPT`（接受率下限，預設只要求至少一次被採用）。
 - 契約檢查器（`tests_llm/contract.py`）刻意跟 production 驗證器分開寫；`tests/test_llm_harness.py` 會確認兩邊對得上，
   也確認測試架構本身（情境確定、沒有模型時正確 SKIP、假模型故意越界時不會漏到玩家眼前）。

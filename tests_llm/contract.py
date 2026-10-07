@@ -31,7 +31,7 @@ TIME_CLASH = {
     5: DAY_ONLY + ["清晨", "黎明", "拂曉", "黃昏", "傍晚", "夕陽"],
 }
 WEATHER_CLASH = {
-    "晴": ["下雨", "細雨", "雨絲", "大雨", "雨點", "撐傘"],
+    "晴": ["下雨", "細雨", "雨絲", "大雨", "雨點", "撐傘", "雨幕"],
     "雨": ["陽光普照", "萬里無雲", "艷陽", "烈日", "晴空"],
     "陰": ["陽光普照", "萬里無雲", "艷陽", "烈日", "晴空"],
 }
@@ -108,7 +108,8 @@ def audit(text, ctx: dict, w) -> list[str]:
     if any(_named(people, n["call"]) and n["call"] not in tpl for n in w.npcs.values()):
         out.append("cast_extra")
     for name in ctx.get("absent", []):
-        if any(name in s and any(p in s for p in PRESENCE) for s in SENTENCE.findall(said)):
+        # 名字後面緊跟（最多隔兩個字的副詞）在場的動作
+        if re.search(re.escape(name) + r"[也便正就又還已緩慢悠]{0,2}(" + "|".join(PRESENCE) + ")", said):
             out.append("absent_on_stage")
             break
     if fresh(COMPANIONS):
