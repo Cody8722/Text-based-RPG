@@ -87,6 +87,8 @@ def violations_for(ctx, w):
         "simplified": tpl + "这时风大了。",
         "format": "{" + tpl,
     }
+    if ctx["names"]:
+        out["cast_missing"] = contract.narration(tpl).replace(ctx["names"][0], "那人")
     quotes = contract.QUOTE.findall(tpl)
     if quotes:
         q = quotes[0]
@@ -132,6 +134,36 @@ class ContractTests(unittest.TestCase):
             text = "你靜靜看著。" + ctx["template"].replace("\n", "") + "風輕輕吹過。"
             self.assertEqual(contract.audit(text, ctx, w), [], f"{name}/{aid}")
             self.assertIsNotNone(check(text, ctx)[0], f"{name}/{aid}: {check(text, ctx)[1]}")
+
+
+class RealRunRegressionTests(unittest.TestCase):
+    """真模型實測時被誤擋的寫法（tests_llm/reports 找到的），現在要放行；真的越界仍然要擋。"""
+
+    def _ctx(self, template, period=2, weather="晴", place="tavern", names=(), absent=()):
+        return {"template": template, "names": list(names), "period": period, "weather": weather, "place": place,
+                "arrived": False, "absent": list(absent), "others": []}
+
+    def test_place_names_are_not_people(self):
+        ctx = self._ctx("你跟阿月道了別。", names=["阿月"])
+        self.assertIsNotNone(check("老王酒館裡，你跟阿月道了別，轉身出門。", ctx)[0])
+        self.assertEqual(check("老王從吧台後探出頭，你跟阿月道了別。", ctx)[1], "extra_name")
+
+    def test_a_name_that_is_also_a_word(self):
+        ctx = self._ctx("你來到長街。", place="street")
+        ctx["arrived"] = True
+        self.assertIsNotNone(check("你來到長街，每一塊石頭都被曬得發燙。", ctx)[0])
+        self.assertEqual(check("你來到長街，石頭朝你揮了揮手。", ctx)[1], "extra_name")
+
+    def test_leaving_is_not_arriving(self):
+        ctx = self._ctx("你跟老王道了別。", period=4, weather="雨", names=["老王"])
+        self.assertIsNotNone(check("你跟老王道了別，踏入雨幕之中。", ctx)[0])
+        self.assertEqual(check("你跟老王道了別，又走進老王酒館。", ctx)[1], "scene_reintro")
+
+    def test_a_line_split_around_a_gesture_is_kept(self):
+        ctx = self._ctx("吳伯：「劉六？見過幾面，人怎麼樣就不知道了。」", place="gate", names=["吳伯"])
+        self.assertIsNotNone(check("吳伯想了想：「劉六？」頓了頓，「見過幾面，人怎麼樣就不知道了。」", ctx)[0])
+        self.assertEqual(check("吳伯想了想：「劉六？」頓了頓，「見過幾面，人怎樣就不知道了。」", ctx)[1], "dialogue")
+        self.assertEqual(check("吳伯慢慢抬起頭，望著城門外的官道：「劉六？見過幾面。」", ctx)[1], "dialogue")
 
 
 class FakeModelRunTests(unittest.TestCase):

@@ -112,7 +112,10 @@ WEATHER_CONTRADICTS = {"晴": _RAIN, "雨": _SUN, "陰": _SUN + ["下雨", "雨�
 COMPANION_WORDS = ["你們幾", "你們一行", "你們兩", "你們三", "同伴", "同行的", "一行人", "你們一夥"]
 PRESENCE_WORDS = ["走到", "走過來", "走了過來", "走進", "走來", "站在", "坐在", "來到", "湊過來", "湊近", "朝你", "向你",
                   "對你", "拍了拍", "遞給", "看著你", "看了你", "點了點頭", "開口", "說道", "插嘴", "在一旁", "身旁", "身邊", "迎上"]
-ARRIVAL_WORDS = ["你來到", "你走進", "你踏進", "你踏入", "映入眼簾", "第一次來到", "初來乍到"]
+ARRIVAL_WORDS = ["映入眼簾", "第一次來到", "初來乍到"]   # 再加上「來到／走進／踏進＋這個地方的名字」，見 check()
+PLACE_NAMES = sorted({p["name"] for p in LOCATIONS.values()}, key=len, reverse=True)
+# 名字剛好也是普通名詞的鎮民：前面接量詞時是東西，不是人（「每一塊石頭」）
+COMMON_WORD_NAMES = {"石頭": "塊顆粒堆些"}
 EVENT_WORDS = ["過世", "死了", "斷氣", "被抓", "抓進", "偷走", "偷了", "打傷", "揍了", "起火", "走水", "失火", "拔刀",
                "殺", "鮮血", "流血", "昏倒", "搶走", "搶了", "報官"]
 # 簡體專用字（繁體文章裡不會出現的寫法）。只收沒有歧義的字。
@@ -120,6 +123,32 @@ SIMPLIFIED = set("这说时来为们会对过还没发现开关问应见长门�
                  "钱银铁饭卖买鸡听声灯烟闻阳阴广场观欢华归乡亲爱脸热烧转轻递缓惊叹继续张刘赵孙吴陈苏冯闲间别么视线经"
                  "给红绿结终纸细织网风飞页题顾预领颜额闪阵际随队阶陆险汉沟泪浓涌满测济药医伤价仅侧摊柜馆师岁")
 _SENT = re.compile(r"[^。！？\n]+")
+
+
+def without_places(text: str) -> str:
+    """地名裡可能有人名（老王酒館），比對人名之前先拿掉。"""
+    for p in PLACE_NAMES:
+        text = text.replace(p, "□")
+    return text
+
+
+def mentions(text: str, alias: str) -> bool:
+    i = text.find(alias)
+    while i >= 0:
+        if not (alias in COMMON_WORD_NAMES and i > 0 and text[i - 1] in COMMON_WORD_NAMES[alias]):
+            return True
+        i = text.find(alias, i + 1)
+    return False
+
+
+def quotes_kept(template: str, text: str) -> bool:
+    """原文的每一句「」都要原封不動出現在輸出裡（標點、空白不計）。
+    說書人可以在一句話中間插一個動作，把它拆成連續的兩三段「」——字一樣、順序一樣就算保留。"""
+    out = [_PUNCT.sub("", q) for q in _QUOTE.findall(text)]
+    for q in (_PUNCT.sub("", x) for x in _QUOTE.findall(template)):
+        if not any("".join(out[i:j]) == q for i in range(len(out)) for j in range(i + 1, min(len(out), i + 4) + 1)):
+            return False
+    return True
 
 
 def narration_only(text: str) -> str:
@@ -163,11 +192,9 @@ def check(output, ctx: dict) -> tuple[str | None, str | None]:
         return None, "too_short"
     if len(text) > tlen * 2 + 80:
         return None, "too_long"
-    # 台詞一字不改：原文的每一句「」，輸出裡都要有一句一模一樣的「」（標點、空白不計；多加字、少字都不行）
-    said_lines = {_PUNCT.sub("", q) for q in _QUOTE.findall(text)}
-    for q in _QUOTE.findall(template):
-        if _PUNCT.sub("", q) not in said_lines:
-            return None, "dialogue"
+    # 台詞一字不改（多加字、少字、換字都不行；可以拆成連續幾段）
+    if not quotes_kept(template, text):
+        return None, "dialogue"
     allowed_digits = set(_DIGITS.findall(template))
     if any(d not in allowed_digits for d in _DIGITS.findall(text)):
         return None, "digits"
@@ -175,10 +202,11 @@ def check(output, ctx: dict) -> tuple[str | None, str | None]:
         if name not in text:
             return None, "missing_name"
     present_ids = {NAME_INDEX[n] for n in ctx["names"] if n in NAME_INDEX}
+    people_text = without_places(text)
     for alias, nid in NAME_INDEX.items():
-        if alias in text and nid not in present_ids and alias not in template:
+        if mentions(people_text, alias) and nid not in present_ids and alias not in template:
             return None, "extra_name"
-    if any(x in text for x in ctx.get("others", [])):   # 中途進鎮的新面孔
+    if any(x in people_text for x in ctx.get("others", [])):   # 中途進鎮的新面孔
         return None, "extra_name"
     if any(ch in SIMPLIFIED for ch in text):
         return None, "simplified"
@@ -197,7 +225,9 @@ def check(output, ctx: dict) -> tuple[str | None, str | None]:
             if name in sent and any(p in sent for p in PRESENCE_WORDS):
                 return None, "absent_on_stage"
     if "place" in ctx and not ctx.get("arrived"):
-        if new(ARRIVAL_WORDS) or scene_overlap(said, ctx["place"]) > 0.2:
+        here = LOCATIONS[ctx["place"]]["name"]
+        again = ARRIVAL_WORDS + [v + here for v in ("來到", "走進", "踏進", "踏入", "走到")]
+        if new(again) or scene_overlap(said, ctx["place"]) > 0.2:
             return None, "scene_reintro"
     if new(EVENT_WORDS):
         return None, "invented_event"
