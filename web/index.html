@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>青石鎮</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@400;600;700&family=Noto+Sans+TC:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="start" class="screen">
+  <div class="start-inner">
+    <h1 class="title">青石鎮</h1>
+    <p class="tagline">鎮子有它自己的日子要過。你只是剛好走了進來。</p>
+    <div id="start-buttons" class="start-buttons">
+      <button id="btn-continue" class="big" hidden>繼續上次的旅程</button>
+      <button id="btn-new" class="big">開始新的旅程</button>
+    </div>
+    <div id="bg-pick" hidden>
+      <p class="pick-hint">你是誰？</p>
+      <div id="bg-cards" class="bg-cards"></div>
+      <button id="bg-back" class="link">返回</button>
+    </div>
+    <p class="start-note" id="start-note"></p>
+  </div>
+</div>
+
+<div id="game" class="screen" hidden>
+  <header class="topbar">
+    <div class="brand">青石鎮</div>
+    <div class="clock" id="clock"></div>
+    <div class="where" id="where"></div>
+    <div class="me" id="me"></div>
+    <button class="drawer-btn" id="drawer-btn" aria-label="開啟側欄">見聞</button>
+  </header>
+  <main class="layout">
+    <section class="story-col">
+      <div class="story" id="story" aria-live="polite"></div>
+      <div class="actions" id="actions"></div>
+    </section>
+    <aside class="side" id="side">
+      <nav class="tabs" id="tabs">
+        <button data-tab="here" class="on">此地</button>
+        <button data-tab="journal">見聞錄</button>
+        <button data-tab="people">人物</button>
+        <button data-tab="deeds">足跡</button>
+        <button data-tab="pack">行囊</button>
+      </nav>
+      <div class="tab-body" id="tab-here"></div>
+      <div class="tab-body" id="tab-journal" hidden></div>
+      <div class="tab-body" id="tab-people" hidden></div>
+      <div class="tab-body" id="tab-deeds" hidden></div>
+      <div class="tab-body" id="tab-pack" hidden></div>
+    </aside>
+  </main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
