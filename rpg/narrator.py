@@ -6,6 +6,9 @@
 - 輸出先過白盒驗證：數字不能憑空出現、片段裡的人名一個都不能少、不能冒出片段裡沒有的鎮民、
   長度要合理、控制字元一律清掉。任何一項不過就用模板原文。
 - 失敗（連不上、逾時、亂碼）只會讓這一段改用模板，不影響任何遊戲結果。
+- 台詞（「」裡的話）是規則選出來的，說書人一字不改照抄；只有台詞、沒有動作或場景的回合不送給說書人。
+- 不給 NPC 的人物設定：那是給設計者看的內心描寫，說書人會把它講出來（等於劇透），也會讓每回合都重新介紹一次人物。
+- 場景只給地名與時辰天氣；完整的地點描寫只在「剛走進來」那一回合的片段裡出現一次。
 - 依 CLAUDE.md 的實測結論：qwen3.5 一律 think:false + num_ctx:8192；提示用描述句，不用「不要…」這種否定命令。
 """
 
@@ -20,10 +23,13 @@ import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
-from .content.locations import LOCATIONS
+from .content.locations import LOCATIONS, PERIODS
 from .content.npcs import NPCS
 
 REWRITE_KINDS = {"action", "speech", "witness", "arrive", "overheard", "approach", "player_say"}
+DIALOGUE_KINDS = {"speech", "player_say"}
+_QUOTE = re.compile(r"「([^「」]+)」")
+_PUNCT = re.compile(r"[\s，。！？、；：…—「」『』,.!?;:]")
 _CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f​-‏ -‮]")
 _DIGITS = re.compile(r"\d+")
 
@@ -77,8 +83,13 @@ def validate(output: str, template: str, required_names: list[str]) -> str | Non
     if not text or "{" in text or "}" in text or "【" in text:
         return None
     tlen = len(template)
-    if len(text) < max(15, int(tlen * 0.5)) or len(text) > tlen * 3 + 250:
+    if len(text) < max(15, int(tlen * 0.5)) or len(text) > tlen * 2 + 80:
         return None
+    # 台詞一字不改（標點、空白不計）
+    flat = _PUNCT.sub("", text)
+    for q in _QUOTE.findall(template):
+        if _PUNCT.sub("", q) not in flat:
+            return None
     allowed_digits = set(_DIGITS.findall(template))
     if any(d not in allowed_digits for d in _DIGITS.findall(text)):
         return None
@@ -135,22 +146,22 @@ class Narrator:
     @staticmethod
     def build_context(w, beats: list[dict]) -> dict | None:
         rew = [b for b in beats if b["kind"] in REWRITE_KINDS]
-        if not rew:
-            return None
+        if not rew or all(b["kind"] in DIALOGUE_KINDS for b in rew):
+            return None   # 純對話：台詞已經是定稿，照原樣顯示
         template = "\n".join(b["text"] for b in rew)
-        speakers, names = [], []
-        for nid, n in w.npcs.items():
-            if n["call"] in template:
-                names.append(n["call"])
-                if nid in NPCS:
-                    speakers.append(f"- {n['call']}（{n['role']}）：{n['persona']}")
+        names = [n["call"] for n in w.npcs.values() if n["call"] in template]
         loc = w.player["location"]
-        night = w.period >= 4
+        here = {w.npcs[i]["call"] for i in w.present_npcs(loc)} | {b.get("speaker") and w.npcs[b["speaker"]]["call"]
+                                                                 for b in rew if b.get("speaker") in w.npcs}
+        on_stage = [x for x in names if x in here]
+        mentioned = [x for x in names if x not in here]
         return {
             "template": template,
             "names": names,
-            "scene": f"{LOCATIONS[loc]['name']}，{'夜裡' if night else '白天'}。{LOCATIONS[loc]['night' if night else 'day']}",
-            "people": "\n".join(speakers),
+            "scene": f"{LOCATIONS[loc]['name']}，{PERIODS[w.period]}，{w.weather}",
+            "cast": "你" + ("、" + "、".join(on_stage) if on_stage else ""),
+            "mentioned": "、".join(mentioned),
+            "length": int(len(template) * 1.3) + 20,
         }
 
     @staticmethod
@@ -158,14 +169,15 @@ class Narrator:
         system = (
             "你是一位說書人，替一款發生在江南小鎮「青石鎮」的文字冒險遊戲，把剛剛發生的事講給玩家聽。"
             "玩家在故事裡以「你」稱呼。下面的「本段已發生的事」全都已經確定，你的工作是把它們串成一段流暢、有畫面的敘事："
-            "每一件事的結果、出場的人、提到的數目都完整保留，人物說話的口吻貼合各自的性格。"
-            "敘事只描寫這些已發生的事與當下的場景氣氛，篇幅跟原文相近或稍長。"
-            "這段文字會直接顯示給玩家閱讀，只包含中文文字與標點符號。輸出一個 JSON 物件，欄位 narrative 放這段敘事。"
+            "引號「」裡的台詞逐字照抄，事件的結果、出場的人、提到的數目都照原樣保留，"
+            "你補上的只有動作、神情和此刻的氣氛。"
+            "這一段緊接在上一段之後，玩家已經熟悉這裡的場景和人物，敘事就從剛發生的事寫起。"
+            "篇幅貼近指定的字數。全文使用繁體中文，只包含文字與標點符號。輸出一個 JSON 物件，欄位 narrative 放這段敘事。"
         )
-        user = f"【場景】{ctx['scene']}\n"
-        if ctx["people"]:
-            user += f"【在場人物的性格】\n{ctx['people']}\n"
-        user += f"【本段已發生的事】\n{ctx['template']}"
+        user = f"【場景】{ctx['scene']}\n【這一段在場的人】{ctx['cast']}\n"
+        if ctx.get("mentioned"):
+            user += f"【只在話裡提到、此刻不在場的人】{ctx['mentioned']}\n"
+        user += f"【篇幅】約{ctx['length']}字\n【本段已發生的事】\n{ctx['template']}"
         return system, user
 
     # ---------- 非同步工作 ----------

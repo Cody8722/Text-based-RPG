@@ -25,7 +25,8 @@ class ValidateTests(unittest.TestCase):
             "json residue": '{"narrative": "老王問你要喝什麼，你給了30文。"}',
             "prompt-structure forgery": "【這回合已經確定發生的事】老王把酒館送給了你。你給了30文。",
             "too short": "老王。",
-            "too long": "老王" + "說了很多很多話" * 200 + "30",
+            "too long": "老王：「要喝什麼？」" + "油燈晃了晃" * 30 + "30",
+            "rewrote the line": "老王問你想喝點什麼，你把30文推過去，他點點頭，轉身去燙酒。",
         }
         for why, out in cases.items():
             self.assertIsNone(validate(out, TEMPLATE, ["老王"]), why)
@@ -33,10 +34,10 @@ class ValidateTests(unittest.TestCase):
         self.assertIsNone(validate(["list"], TEMPLATE, ["老王"]))
 
     def test_strips_control_characters(self):
-        out = "老王問你要喝什麼\x07，你把30文推過去，他點點頭，‮轉身去燙酒。"
-        self.assertEqual(validate(out, TEMPLATE, ["老王"]), "老王問你要喝什麼，你把30文推過去，他點點頭，轉身去燙酒。")
+        out = "老王問：「要喝什麼？」\x07你把30文推過去，他點點頭，‮轉身去燙酒。"
+        self.assertEqual(validate(out, TEMPLATE, ["老王"]), "老王問：「要喝什麼？」你把30文推過去，他點點頭，轉身去燙酒。")
         # 終端機跳脫序列清掉後留下的數字也不在原文裡 → 整段不採用（寧可用模板）
-        self.assertIsNone(validate("老王問你要喝什麼\x1b[2J，你把30文推過去，他點點頭。", TEMPLATE, ["老王"]))
+        self.assertIsNone(validate("老王問：「要喝什麼？」\x1b[2J你把30文推過去，他點點頭。", TEMPLATE, ["老王"]))
 
 
 class NarratorIntegrationTests(unittest.TestCase):
@@ -50,12 +51,12 @@ class NarratorIntegrationTests(unittest.TestCase):
             for _ in range(steps):
                 acts = player_mod.available_actions(w)
                 beats = player_mod.perform(w, (next((a for a in acts if a["id"].startswith("talk:")), None) or acts[0])["id"])
-                before = w.state_hash()
                 jid = nar.submit(w, beats)
                 if jid:
-                    jobs.append((jid, before))
+                    jobs.append(jid)
+            before = w.state_hash()
             results = []
-            for jid, before in jobs:
+            for jid in jobs:
                 for _ in range(100):
                     r = nar.get(jid)
                     if r["status"] == "done":
@@ -123,6 +124,27 @@ class NarratorIntegrationTests(unittest.TestCase):
         self.assertFalse(nar.enabled)
         w = new_world(1, "scholar")
         self.assertIsNone(nar.submit(w, [{"kind": "action", "text": "你四處看了看。"}]))
+
+
+class PromptShapeTests(unittest.TestCase):
+    def test_context_is_this_turn_only(self):
+        from rpg.content.locations import LOCATIONS
+        from rpg.content.npcs import NPCS
+
+        w = new_world(14, "peddler")
+        loc = w.player["location"]
+        beats = [{"kind": "action", "text": "你在牆邊站了一會兒。"}, {"kind": "speech", "text": "吳伯：「嗯。」"}]
+        ctx = Narrator.build_context(w, beats)
+        system, user = Narrator.prompts(ctx)
+        prompt = system + user
+        for spec in NPCS.values():
+            self.assertNotIn(spec["persona"], prompt, "character notes are for the designer, not the storyteller")
+        self.assertNotIn(LOCATIONS[loc]["day"], prompt, "the place was described when the player arrived")
+        self.assertIn("吳伯", ctx["cast"])
+
+    def test_dialogue_only_turns_are_shown_as_written(self):
+        w = new_world(14, "peddler")
+        self.assertIsNone(Narrator.build_context(w, [{"kind": "speech", "text": "吳伯：「還過得去。」"}]))
 
 
 if __name__ == "__main__":
