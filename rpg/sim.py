@@ -126,10 +126,16 @@ def period_tick(w: World):
 
 def ambient(w: World):
     loc = w.player["location"]
-    if loc is None:
+    if loc is None or w.player.get("jailed_until", 0) >= w.day:   # 關在拘房裡看不到外頭
         return
-    if loc in LOCATIONS and w.rng.random() < 0.25:
-        beat(w, "ambient", w.rng.choice(LOCATIONS[loc]["ambient"]))
+    from . import speech
+
+    if loc in LOCATIONS and speech.chance(w, "_amb", 25):   # 純文字：不消耗 world.rng
+
+        pool = LOCATIONS[loc]["ambient"]
+        line = speech.pick(w, f"_amb:{loc}", pool, optional=True, keep=max(1, len(pool) - 1))
+        if line:   # 剛出現過的路人景象不馬上重演
+            beat(w, "ambient", line)
 
 
 # ---------------- 排程的事件（催收上門、抓人） ----------------
@@ -158,7 +164,13 @@ def run_scheduled(w: World):
 def day_start(w: World):
     w.weather = "雨" if w.rng.random() < 0.15 else ("陰" if w.rng.random() < 0.25 else "晴")
     w.prosperity += (50 - w.prosperity) // 6
-    beat(w, "day", w.rng.choice(T.DAY_OPENERS) + ("下著小雨。" if w.weather == "雨" else ""))
+    from . import speech
+
+    if w.player.get("jailed_until", 0) >= w.day:
+        pool = T.DAY_OPENERS_JAIL
+    else:
+        pool = T.DAY_OPENERS_RAIN if w.weather == "雨" else T.DAY_OPENERS
+    beat(w, "day", speech.pick(w, "_day", pool))
     for n in w.npcs.values():
         n["talks_today"] = 0
     from . import player as player_mod

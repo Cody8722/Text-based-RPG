@@ -63,7 +63,7 @@
   }
 
   // ---------------- turn rendering ----------------
-  const TAGS = { witness: "眼前", overheard: "耳聞", news: "傳聞", approach: "" };
+  const TAGS = { witness: "眼前", overheard: "耳聞", news: "街談", approach: "" };
 
   function beatEl(b) {
     const p = el("p", `beat k-${b.kind}`);

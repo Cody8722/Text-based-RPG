@@ -93,8 +93,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .k-approach { background: var(--jade-soft); }
 .k-overheard { color: var(--ink-soft); font-style: italic; }
 .k-ambient, .k-distant { color: var(--ink-faint); font-size: 15px; font-style: italic; }
-.k-news { background: var(--gold-soft); padding: 6px 12px; border-radius: 4px; font-size: 15px; }
-.k-news .tag, .k-witness .tag, .k-overheard .tag { font-family: var(--sans); font-size: 12px; color: var(--ink-faint); margin-right: 6px; font-style: normal; }
+.k-news, .k-board { background: var(--gold-soft); padding: 6px 12px; border-radius: 4px; font-size: 15px; }
+.k-news .tag, .k-board .tag, .k-witness .tag, .k-overheard .tag { font-family: var(--sans); font-size: 12px; color: var(--ink-faint); margin-right: 6px; font-style: normal; }
 .k-mischief { color: var(--gold); font-style: italic; text-align: center; }
 .k-system { font-family: var(--sans); color: var(--ink-faint); font-size: 13px; }
 .k-player_say { text-align: right; color: var(--jade); font-style: italic; }

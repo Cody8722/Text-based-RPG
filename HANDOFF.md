@@ -77,6 +77,7 @@ rpg/
   reactions.py    任何人「得知一件事」之後的白盒反應；捕頭的懷疑分數
   player.py       玩家：出身、可做的動作（伺服器產生）、執行、介入的分岔
   dialogue.py     交談：說不說、說什麼；自由輸入只對應到白名單意圖
+  speech.py       說話層：事實→口語；把同一個人的同一類事歸成「故事」；NPC 說過的句子記住不重複
   view.py         玩家視角投影：前端唯一拿得到的資料
   narrator.py     說書人（Ollama）：組 prompt、非同步、白盒驗證、失敗退回模板
   devtools.py     編年史、因果鏈、統計（會劇透，玩家介面不使用）
@@ -127,6 +128,7 @@ docs/reviews/     舊 MVP 的審查文件
 | 每日規則（經濟、債、病、案件） | `rpg/sim.py` |
 | 玩家能做的事 | `rpg/player.py`（地點動作、介入）、`rpg/dialogue.py`（交談動作） |
 | 事實的文字、目擊描寫 | `rpg/content/text.py` |
+| NPC 口中的說法、故事歸併、清晨街談、提起你的事 | `rpg/speech.py` |
 | 前端 | `web/` |
 
 新增事實類型時：在 `text.fact_text` 加一句、需要的話在 `WITNESS` 加目擊描寫、在 `reactions.on_learn` 決定它會讓人怎麼想。
@@ -148,6 +150,7 @@ python -m unittest discover -s legacy/tests   # 舊 MVP（仍應全綠，含 3 �
 | `test_determinism_and_save.py` | 同 seed 同動作同世界、存讀檔後接著跑完全一致、壞存檔不崩、引擎不用全域 random |
 | `test_view_hiding.py` | 前端資料不含內部欄位、不含玩家不知道的祕密、選單不洩漏誰被關 |
 | `test_narrator.py` | LLM 亂寫／捏造數字／多拉人／逾時／連不上 → 退回模板；敘事永遠不改 state；prompt 不含祕密；`think:false`、`num_ctx:8192` 有帶 |
+| `test_dialogue.py` | 同一個故事清晨只播一次、見聞錄一件事一條、傳話一次講完整件事、追問會換說法然後對方不聊了、家常話不重複、NPC 只提一次你做的事、當事人不轉述自己做的事、偷竊被逮後被趕出去並被盯上、選句子不動到世界的亂數 |
 | `test_server.py` | 真 HTTP：完整流程、壞請求、除錯端點預設關閉、靜態檔不能穿越目錄 |
 | `test_ui_e2e.py` + `ui_e2e.js` | 真瀏覽器：開局、選出身、移動、交談、快捷鍵、側欄、手機抽屜、說書人敘事出現且不卡住、頁面沒有 JS 錯誤 |
 
@@ -187,6 +190,8 @@ python -m rpg.cli sim --seed 7 --days 60 --all      # 包含所有瑣事
 - **昏倒不是死亡**：會在別處醒來，損失一些東西，遊戲繼續。
 - **沒有說書人時文字比較樸素**，但所有結果都一樣；說書人只改變講法，不改變發生的事。
 - **相同 seed 在不同的玩家動作下會走出不同的世界**——你做的每件事都會改變骰子的順序。
+- **同一場談話裡一直問同一件事，對方會不耐煩、甚至走開**；同一件事被街坊傳過了，清晨不會再聽一遍。
+- **見聞錄以「一件事」為單位**：同一個人接連出的事會合成一條，日子顯示最新的那次。
 
 ## 11. 給接手者的規則
 
@@ -194,4 +199,6 @@ python -m rpg.cli sim --seed 7 --days 60 --all      # 包含所有瑣事
 - 新增「調皮事件」類的例外時，觸發時機與內容池都要白盒化並寫進 `mischief_log`。
 - 新增玩家看得到的資料前，先想「玩家角色怎麼會知道這件事」，並讓 `test_view_hiding.py` 涵蓋它。
 - 文件（包括這份）不寫人物祕密、隱藏設定內容、事件鏈與驚喜。
+- 新增會被說出口的事實類型時，在 `speech.SPOKEN` 補口語說法、在 `speech.story_key` 決定它屬於哪個故事；只影響措辭的隨機一律用 `speech.pick`／`speech.chance`（文字專用亂數），不要用 `world.rng`——措辭不該改變世界的走向。
+- NPC 台詞不要直接把 `fact_text`（紀錄體）塞進引號；走 `speech.retell`／`speech.spoken`。
 - 改平衡後跑全部測試；`test_causality.py` 的範圍斷言失敗時，先讀編年史判斷是平衡跑掉還是斷言過嚴，再決定改哪一邊。

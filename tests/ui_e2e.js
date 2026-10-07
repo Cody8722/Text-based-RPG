@@ -23,14 +23,18 @@ const { chromium } = require("playwright");
   const click = async (selector) => {
     const btn = page.locator(selector).first();
     if (!(await btn.count())) return false;
+    const before = await page.locator(".turn").count();
     await btn.click();
-    await page.waitForFunction(() => !document.querySelector("#actions button[disabled]:not(.closed)") || true);
-    await page.waitForTimeout(250);
+    // 等這一回合真的畫出來，而不是固定等一段時間（伺服器或瀏覽器慢一點時不會漏點）
+    await page.waitForFunction((n) => document.querySelectorAll(".turn").length > n, before, { timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(100);
     return true;
   };
   // 移動、交談、寒暄、打聽
   await click('#actions button:has-text("長街")');
   for (let i = 0; i < 6; i++) {
+    // 世界不等人：途中可能撞見要你當場決定的事（介入），先回應它
+    await click('.group:has(.group-title:has-text("此刻")) button');
     if (await click("#actions .person-btn")) {
       await click('#actions button:has-text("寒暄")');
       await click('#actions button:has-text("最近鎮上")');
@@ -38,7 +42,11 @@ const { chromium } = require("playwright");
     }
     const moves = page.locator('.group:has(.group-title:text("前往")) button:not(.closed)');
     const n = await moves.count();
-    if (n) { await moves.nth(i % n).click(); await page.waitForTimeout(250); }
+    if (n) {
+      const before = await page.locator(".turn").count();
+      await moves.nth(i % n).click();
+      await page.waitForFunction((k) => document.querySelectorAll(".turn").length > k, before, { timeout: 5000 }).catch(() => {});
+    }
   }
   // 鍵盤快捷鍵
   await page.keyboard.press("1");

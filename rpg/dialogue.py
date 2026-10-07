@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from . import behaviors, sim
+from . import behaviors, sim, speech
 from .content import text as T
 from .content.npcs import CHATTER, NPCS, TALK
 
@@ -25,6 +25,7 @@ GENERIC_VOICE = {
 }
 
 
+EXTRA_COLD = ["「我跟你沒什麼好說的。」", "「你走吧。」", "「……」連看都沒看你一眼。", "「別在這兒礙眼。」"]
 EXTRA_DEFLECT = ["「這人我不熟。」", "「不清楚，你問別人吧。」", "「你問錯人了。」", "「沒聽說什麼。」", "「這種事，少打聽為妙。」"]
 
 
@@ -33,7 +34,31 @@ def voice(w, nid, key):
     lines = list(NPCS.get(vk, {}).get("voice", GENERIC_VOICE).get(key) or GENERIC_VOICE[key])
     if key == "deflect":
         lines += EXTRA_DEFLECT
-    return w.rng.choice(lines)
+    elif key == "cold":
+        lines += EXTRA_COLD
+    return speech.pick(w, nid, lines)
+
+
+def rebuff(w, nid):
+    """對你沒好感的人，問什麼都碰釘子；碰到第三次，對方就不理你了。"""
+    c = w.player.get("convo") or {}
+    c["rebuffs"] = c.get("rebuffs", 0) + 1
+    if c["rebuffs"] >= 3:
+        wear_out(w, nid)
+    else:
+        say(w, nid, f"{w.name(nid)}：{voice(w, nid, 'cold')}")
+
+
+# 同一天第二次以後碰面：不再用初見的招呼
+AGAIN = {
+    "warm": ["「又來啦？」", "「還有事？說吧。」", "「怎麼，又想起什麼了？」"],
+    "neutral": ["「又是你。」", "「還有什麼事？」", "「嗯？剛才不是才見過。」"],
+    "cold": ["「怎麼又是你。」", "「沒完沒了是吧？」"],
+}
+# 同一場談話裡問了又問
+REPEAT_ASK = ["「剛不是說過了？」", "「同樣的話，你要我說幾遍？」", "「你今天怎麼老問這個。」", "「就那樣，沒別的了。」"]
+WEARY = ["{n}擺擺手，不想再說了。", "{n}打了個哈欠：「改天再聊吧。」說完就忙自己的去了。",
+         "{n}看了看天色：「好了，我還有事。」", "{n}的眼神已經飄到別處去了，顯然不想再聊。"]
 
 
 def tier(w, nid):
@@ -89,11 +114,18 @@ def talk_actions(w, nid) -> list[dict]:
     p = w.player
     out = [act("chat", talk_spec(w, nid)["label"], "talk"), act("ask_news", "問問最近鎮上有什麼事", "talk"),
            act("ask_self", f"問問{w.name(nid)}最近過得怎麼樣", "talk")]
+    asked = (p.get("convo") or {}).get("asked", {}) if (p.get("convo") or {}).get("nid") == nid else {}
     for ref in people_of_interest(w, nid):
-        out.append(act(f"ask_about:{ref}", f"打聽{w.name(ref)}", "ask"))
-    known = [w.facts[f] for f in reversed(list(p["knows"])) if f in w.facts and w.facts[f]["type"] not in ("player_work",)]
-    for f in known[:12]:
-        out.append(act(f"tell:{f['id']}", T.fact_text(w, f), "tell"))
+        if not asked.get(f"ask_about:{ref}"):   # 這場談話裡問過的人就不再列出
+            out.append(act(f"ask_about:{ref}", f"打聽{w.name(ref)}", "ask"))
+    # 能說出去的是「一件事」（一個故事），不是見聞錄的每一行
+    stories = sorted(speech.stories_of(w, "player").values(), key=lambda fs: (fs[-1]["day"], fs[-1]["id"]), reverse=True)
+    tried = p.get("told_to", {}).get(nid, {})
+    # 跟這個人說過（或被回「早知道了」）的事，除非後來又有新進展，否則不再列出
+    stories = [fs for fs in stories if tried.get(speech.story_key(fs[-1]), 0) < len(fs)]
+    for fs in stories[:12]:
+        label = speech.story_text(w, fs, timed=False, owner="_label")
+        out.append(act(f"tell:{fs[-1]['id']}", (label[:38] + "……") if len(label) > 40 else label + "。", "tell"))
     if n["status"] == "normal":
         for amt in (10, 30, 50):
             if p["money"] >= amt:
@@ -158,6 +190,7 @@ def talk_actions(w, nid) -> list[dict]:
 def start_talk(w, nid):
     p = w.player
     p["talking_to"] = nid
+    p["convo"] = {"nid": nid, "asked": {}, "turns": 0}
     n = w.npcs[nid]
     first = nid not in p["met"]
     if first:
@@ -165,32 +198,39 @@ def start_talk(w, nid):
         n["met_player"] = True
         sim.beat(w, "action", f"{n['appearance']}這人是{n['call']}，{n['role']}。", None)
     t = tier(w, nid)
-    say(w, nid, f"{w.name(nid)}：{voice(w, nid, t)}")
+    greeted = p.setdefault("greeted", {})
+    if not first and greeted.get(nid) == w.day:
+        say(w, nid, f"{w.name(nid)}：{speech.pick(w, nid, AGAIN[t])}")
+    else:
+        say(w, nid, f"{w.name(nid)}：{voice(w, nid, t)}")
+    greeted[nid] = w.day
     comment_on_deeds(w, nid)
 
 
 def comment_on_deeds(w, nid):
-    """NPC 聽說過你做的事，會提起——世界記得你。"""
-    p = w.player
-    n = w.npcs[nid]
-    for fid in reversed(list(n["knows"])):
-        f = w.facts.get(fid)
-        if not f or "player" not in f["roles"].values() or fid in p["commented"] or f["day"] < w.day - 6:
-            continue
-        key = f"{nid}:{fid}"
-        if key in p["commented"]:
-            continue
-        p["commented"].append(key)
-        src = n["knows"][fid]["src"]
-        heard = "我聽人說" if src not in ("witness", "self") else "我可都看見了"
-        good = f["type"] in ("rescue", "persuade", "debt_paid_by", "help_money", "medicine", "caught_stealing") and w.culprit_of(f) != "player"
-        if f["type"] == "caught_stealing" and f["roles"].get("thief") == "player":
-            good = False
-        if good:
-            say(w, nid, f"{w.name(nid)}看你的眼神不太一樣了：「{heard}——{T.fact_text(w, f, speaker=nid)}」")
-        else:
-            say(w, nid, f"{w.name(nid)}的語氣冷了幾分：「{heard}，{T.fact_text(w, f, speaker=nid)}」")
-        return
+    """NPC 聽說過你做的事，會提起——世界記得你。每個故事只提一次，不是每個人都會提（見 speech.deed_remark）。"""
+    line = speech.deed_remark(w, nid)
+    if line:
+        say(w, nid, line)
+
+
+def asked_again(w, nid, kind: str, arg: str = "") -> int:
+    """這場談話裡，這個問題已經問過幾次（不含這次）。"""
+    c = w.player.get("convo") or {}
+    if c.get("nid") != nid:
+        c = w.player["convo"] = {"nid": nid, "asked": {}, "turns": 0}
+    k = f"{kind}:{arg}"
+    n = c["asked"].get(k, 0)
+    c["asked"][k] = n + 1
+    return n
+
+
+def wear_out(w, nid, opinion_cost: int = 0):
+    """問煩了：對方結束談話。"""
+    sim.beat(w, "action", speech.pick(w, nid, WEARY).format(n=w.name(nid)))
+    if opinion_cost:
+        w.adjust_opinion(nid, "player", -opinion_cost)
+    w.player["talking_to"] = None
 
 
 def do_talk(w, action_id, text=None):
@@ -207,6 +247,8 @@ def do_talk(w, action_id, text=None):
         return
     handler = HANDLERS.get(kind)
     if handler:
+        convo = p.get("convo") or {}
+        convo["turns"] = convo.get("turns", 0) + 1
         handler(w, nid, arg)
     if p.get("talking_to"):
         sim.advance(w, 1)
@@ -245,7 +287,7 @@ def chat_scene(w, nid) -> str:
     loc = p["location"]
     day_frames, night_frames = T.PLACE_FRAME.get(loc, (["在一旁"], ["在夜色裡"]))
     frames = night_frames if w.period >= 4 else day_frames
-    frame = "坐在床邊" if n.get("bedridden") else "隔著木柵" if n["status"] == "jailed" else w.rng.choice(frames)
+    frame = "坐在床邊" if n.get("bedridden") else "隔著木柵" if n["status"] == "jailed" else speech.pick(w, f"_frame:{loc}", frames)
     topics = talk_spec(w, nid)["topics"]
     used = p.setdefault("topics_used", {}).setdefault(nid, [])
     fresh = [t for t in topics if t not in used[-(len(topics) - 1):]] or topics
@@ -260,13 +302,17 @@ def chat_scene(w, nid) -> str:
         mood = "stressed"
     else:
         mood = tier(w, nid)
-    reaction = w.rng.choice(T.CHAT_REACTION[mood]).format(n=w.name(nid))
+    reaction = speech.pick(w, nid, T.CHAT_REACTION[mood]).format(n=w.name(nid))
     return f"{frame}，你和{w.name(nid)}聊起{topic}。{reaction}"
 
 
 def h_chat(w, nid, _):
     p = w.player
     n = w.npcs[nid]
+    again = asked_again(w, nid, "chat")
+    if again >= 3:
+        wear_out(w, nid)
+        return
     first_today = p["chatted"].get(nid) != w.day
     p["chatted"][nid] = w.day
     gain = 4 if first_today else 1
@@ -277,7 +323,9 @@ def h_chat(w, nid, _):
     if line:
         say(w, nid, f"{w.name(nid)}：{line}")
     elif n.get("voice_key") in CHATTER and w.opinion(nid, "player") > -25:
-        say(w, nid, f"{w.name(nid)}：{w.rng.choice(CHATTER[n['voice_key']])}")
+        chatter = speech.pick(w, nid, CHATTER[n["voice_key"]], optional=True, keep=30)
+        if chatter:   # 說過的家常話短期內不再說；說完了就只寫聊天的場景
+            say(w, nid, f"{w.name(nid)}：{chatter}")
     sim.beat(w, "action", chat_scene(w, nid))
     if w.roll(n["traits"]["gossip"] * 6 + w.opinion(nid, "player") / 3):
         share_one(w, nid, None, lead=True)
@@ -287,67 +335,113 @@ def state_line(w, nid) -> str | None:
     """處境會改變說話內容：喪親、受傷、被關、丟了生計的人，聊天聊不出輕鬆話。"""
     n = w.npcs[nid]
     if n.get("grief_until", 0) >= w.day:
-        return w.rng.choice(["「……」只是盯著桌面，什麼也沒說。", "「別跟我說話。現在不想。」", "「人啊，說沒就沒了。」"])
+        return speech.pick(w, nid, ["「……」只是盯著桌面，什麼也沒說。", "「別跟我說話。現在不想。」", "「人啊，說沒就沒了。」"])
     if n["status"] == "jailed":
-        return w.rng.choice(["「你來看我笑話的？」", "「我是冤枉的……你信不信？」", "「這裡的飯，狗都不吃。」"])
+        return speech.pick(w, nid, ["「你來看我笑話的？」", "「我是冤枉的……你信不信？」", "「這裡的飯，狗都不吃。」"])
     if not n.get("employed", True):
-        return w.rng.choice(["「活兒沒了，以後怎麼辦，誰知道呢。」", "「別問了，我現在是個閒人。」"])
+        return speech.pick(w, nid, ["「活兒沒了，以後怎麼辦，誰知道呢。」", "「別問了，我現在是個閒人。」"])
     if n["health"] < 50 and not n.get("bedridden"):
-        return w.rng.choice(["「沒事，摔了一跤。」說話時扯到傷口，眉頭一皺。", "「這點傷，死不了。」"])
+        return speech.pick(w, nid, ["「沒事，摔了一跤。」說話時扯到傷口，眉頭一皺。", "「這點傷，死不了。」"])
     if n["stress"] >= 75:
-        return w.rng.choice(["「最近煩心事多，你別見怪。」", "「唉……」一聲長嘆，好像有話卡在喉嚨裡。"])
+        return speech.pick(w, nid, ["「最近煩心事多，你別見怪。」", "「唉……」一聲長嘆，好像有話卡在喉嚨裡。"])
     return None
 
 
 def share_one(w, nid, topic, lead=False) -> bool:
+    """nid 挑一件玩家還不知道的事告訴他——以「故事」為單位：
+    玩家已經聽過的故事，權重大降（只有新進展才值得再提）；講的時候把同一個故事裡能說的一起說完。"""
     opts = behaviors.shareable(w, nid, "player", topic)
-    fid = w.pick_weighted(opts)
+    if not opts:
+        return False
+    known = {speech.story_key(w.facts[f]) for f in w.player["knows"] if f in w.facts}
+    told = w.player.setdefault("told_by", {}).setdefault(nid, [])
+    weighted = []
+    for fid, wt in opts:
+        k = speech.story_key(w.facts[fid])
+        weighted.append((fid, wt * (0.15 if k in told else 0.4 if k in known else 1.0)))
+    fid = w.pick_weighted(weighted)
     if not fid:
         return False
+    key = speech.story_key(w.facts[fid])
+    before = len(speech.story_facts(w, "player", key))
     shared = behaviors.tell(w, nid, "player", fid)
-    f = w.facts[shared]
-    leads = ["壓低了聲音", "左右看了看，湊近你", "像是想起什麼似的", "嘆了口氣", "撇了撇嘴"]
-    say(w, nid, f"{w.name(nid)}{w.rng.choice(leads)}：「{('跟你說件事，' if lead else '')}{T.fact_text(w, f, speaker=nid)}」")
+    if shared == fid:
+        for other, _ in opts:
+            if other != fid and speech.story_key(w.facts[other]) == key:
+                w.learn("player", other, nid)
+    skey = speech.story_key(w.facts[shared])
+    if skey != key:
+        before = len([f for f in speech.story_facts(w, "player", skey) if f["id"] != shared])
+    facts = [f for f in speech.story_facts(w, "player", skey) if f["id"] in w.npcs[nid]["knows"] or f["id"] == shared]
+    if skey not in told:
+        told.append(skey)
+    say(w, nid, speech.retell(w, nid, facts, known_before=before, intro=lead))
     return True
+
+
+NOTHING_NEW = ["「最近？沒什麼新鮮的。」", "「該說的都說了，鎮上這幾天就這樣。」", "「我知道的，你大概也都聽過了。」",
+               "「沒了沒了，再問我也變不出來。」"]
 
 
 def h_ask_news(w, nid, _):
     n = w.npcs[nid]
     bonus = 10 if w.player["background"] == "scholar" else 0
+    again = asked_again(w, nid, "ask_news")
     if w.opinion(nid, "player") < -30:
-        say(w, nid, f"{w.name(nid)}：{voice(w, nid, 'cold')}")
+        rebuff(w, nid)
         return
-    if w.roll(40 + n["traits"]["gossip"] * 6 + bonus) and share_one(w, nid, None):
+    if again >= 3:
+        wear_out(w, nid)
         return
+    if w.roll(40 + n["traits"]["gossip"] * 6 + bonus - again * 15) and share_one(w, nid, None):
+        return
+    # 鎮上的瑣事：玩家聽過的不再聽一遍（不管是誰說的）
     heard = w.player.setdefault("small_news", [])
     pool = T.LOCAL_NEWS.get(w.player["location"], []) + T.SMALL_NEWS
-    fresh = [x for x in pool if x not in heard[-4:]]
-    line = w.rng.choice(fresh or pool)
+    fresh = [x for x in pool if x not in heard]
+    if again or not fresh:
+        say(w, nid, f"{w.name(nid)}：{speech.pick(w, nid, NOTHING_NEW)}")
+        return
+    line = speech.text_rng(w, "_small").choice(fresh)
     heard.append(line)
+    del heard[:-20]
     say(w, nid, f"{w.name(nid)}想了想：{line}")
+
+
+FEEL = {
+    "respect": ["說起{t}，{s}的語氣裡帶著敬重", "{s}一聽是{t}，坐直了些"],
+    "like": ["提到{t}，{s}笑了笑", "{s}一聽是問{t}，神情軟了下來"],
+    "plain": ["{s}想了想{t}這個人", "{s}聽你問起{t}，抬了抬眉毛", "「{t}？」{s}重複了一遍", "{s}摸著下巴想了一會兒"],
+    "dislike": ["聽到{t}的名字，{s}皺了皺眉", "{s}的臉色淡了下來"],
+    "hate": ["說到{t}，{s}撇了撇嘴", "{s}一聽{t}的名字就哼了一聲"],
+}
+HEARD_IT = ["{n}聽完，若有所思地點了點頭。", "{n}「嗯」了一聲，沒多說什麼。", "{n}聽得很仔細，末了只說了句：「知道了。」",
+            "{n}眉毛挑了挑：「還有這種事。」", "{n}沉默了一會兒，像是在掂量這話的分量。"]
 
 
 def h_ask_about(w, nid, ref):
     n = w.npcs[nid]
     if ref not in w.npcs:
         return
+    if asked_again(w, nid, "ask_about", ref):
+        say(w, nid, f"{w.name(nid)}：「{w.name(ref)}的事，我知道的就這些了。」")
+        return
     op = w.opinion(nid, ref)
-    feel = ("說起{t}，{s}的語氣裡帶著敬重" if op >= 50 else "提到{t}，{s}笑了笑" if op >= 20 else
-            "說到{t}，{s}撇了撇嘴" if op <= -40 else "聽到{t}的名字，{s}皺了皺眉" if op <= -15 else
-            "{s}想了想{t}這個人")
+    band = "respect" if op >= 50 else "like" if op >= 20 else "hate" if op <= -40 else "dislike" if op <= -15 else "plain"
+    feel = speech.pick(w, nid, FEEL[band])
     sim.beat(w, "action", feel.format(t=w.name(ref), s=w.name(nid)) + "。")
+    shared = 0
     if w.opinion(nid, "player") < -30:
-        say(w, nid, f"{w.name(nid)}：{voice(w, nid, 'cold')}")
+        rebuff(w, nid)
         return
     bonus = 10 if w.player["background"] == "scholar" else 0
-    shared = 0
     for _ in range(2):
         if w.roll(55 + n["traits"]["gossip"] * 4 + bonus + w.opinion(nid, "player") / 4) and share_one(w, nid, ref):
             shared += 1
     if not shared:
         if ref in w.npcs and w.rng.random() < 0.7:
             key = "warm" if op >= 30 else "cold" if op <= -25 else "neutral"
-            line = w.rng.choice(T.IMPRESSION[key]).format(t=w.name(ref), role=w.npcs[ref]["role"])
+            line = speech.pick(w, nid, T.IMPRESSION[key]).format(t=w.name(ref), role=w.npcs[ref]["role"])
             say(w, nid, f"{w.name(nid)}：{line}")
         else:
             say(w, nid, f"{w.name(nid)}：{voice(w, nid, 'deflect')}")
@@ -358,8 +452,20 @@ def h_ask_self(w, nid, _):
     p = w.player
     threshold = 30 + (n["traits"]["pride"] - 5) * 4
     op = w.opinion(nid, "player")
+    again = asked_again(w, nid, "ask_self")
+    if again:
+        # 同一場談話裡追問：第二次被頂回來，第三次對方不想聊了（交情也薄了一點）
+        if again >= 2:
+            wear_out(w, nid, opinion_cost=2)
+        else:
+            say(w, nid, f"{w.name(nid)}：{speech.pick(w, nid, REPEAT_ASK)}")
+        return
     if op < threshold:
-        say(w, nid, f"{w.name(nid)}：{w.rng.choice(T.GUARDED)}")
+        if tier(w, nid) == "cold":
+            rebuff(w, nid)
+            return
+        else:
+            say(w, nid, f"{w.name(nid)}：{speech.pick(w, nid, T.GUARDED + list(NPCS.get(n.get('voice_key'), {}).get('voice', {}).get('deflect', [])))}")
         if n["stress"] >= 60:
             sim.beat(w, "action", f"可是{w.name(nid)}眼神閃了一下，看得出心裡壓著事。")
         return
@@ -367,7 +473,7 @@ def h_ask_self(w, nid, _):
     for key, fid in (n.get("need_fact") or {}).items():
         f = w.facts.get(fid)
         if f and f["day"] >= w.day - 6 and fid not in p["knows"]:
-            say(w, nid, f"{w.name(nid)}：{voice(w, nid, 'trouble')}「{T.fact_text(w, f, speaker=nid)}」")
+            say(w, nid, f"{w.name(nid)}：{voice(w, nid, 'trouble')}「{speech.spoken(w, f, speaker=nid, owner=nid)}。」")
             w.learn("player", fid, nid)
             told = True
             break
@@ -377,29 +483,39 @@ def h_ask_self(w, nid, _):
             if f and f["type"] == "loan" and f["roles"].get("borrower") == nid and fid not in p["knows"]:
                 ln = next((l for l in w.loans.values() if l.get("fact") == fid and l["status"] == "open"), None)
                 if ln:
-                    say(w, nid, f"{w.name(nid)}：{voice(w, nid, 'trouble')}「{T.fact_text(w, f, speaker=nid)}」")
+                    say(w, nid, f"{w.name(nid)}：{voice(w, nid, 'trouble')}「{speech.spoken(w, f, speaker=nid, owner=nid)}，日子到了還不知道拿什麼還。」")
                     w.learn("player", fid, nid)
                     told = True
                     break
     if not told:
         if n.get("grief_until", 0) >= w.day:
             say(w, nid, f"{w.name(nid)}沉默了很久，只說了一句：「……人沒了。」")
-        elif state_line(w, nid):
-            say(w, nid, f"{w.name(nid)}：{state_line(w, nid)}")
         else:
-            say(w, nid, f"{w.name(nid)}：「我？好得很，多謝關心。」")
+            line = state_line(w, nid)
+            say(w, nid, f"{w.name(nid)}：{line or speech.pick(w, nid, FINE)}")
     w.adjust_opinion(nid, "player", 2)
+
+
+FINE = ["「我？好得很，多謝關心。」", "「托你的福，還過得去。」", "「老樣子，餓不死也撐不著。」", "「沒什麼好抱怨的。」"]
+ALREADY = ["「這事我早知道了。」", "「你也聽說了？我早就知道了。」", "「這還用你說。」", "「嗯，聽說了。」"]
 
 
 def h_tell(w, nid, fid):
     f = w.facts.get(fid)
     if not f or fid not in w.player["knows"]:
         return
-    if fid in w.npcs[nid]["knows"]:
-        say(w, nid, f"{w.name(nid)}：「這事我早知道了。」")
+    story = speech.story_facts(w, "player", speech.story_key(f))
+    w.player.setdefault("told_to", {}).setdefault(nid, {})[speech.story_key(f)] = len(story)
+    new = [x for x in story if x["id"] not in w.npcs[nid]["knows"]]
+    if not new:
+        say(w, nid, f"{w.name(nid)}：{speech.pick(w, nid, ALREADY)}")
         return
-    w.learn(nid, fid, "player")
-    sim.beat(w, "action", f"你把{T.fact_text(w, f)[:-1]}這件事告訴了{w.name(nid)}。")
+    for x in new:
+        w.learn(nid, x["id"], "player")
+    f = new[-1]
+    what = speech.story_text(w, story, timed=False, owner="_player")
+    what = "自己" + what[1:] if what.startswith("你") else what
+    sim.beat(w, "action", f"你把{what}的事告訴了{w.name(nid)}。")
     culprit = w.culprit_of(f)
     if nid == "zhao" and f["type"] in ("theft", "caught_stealing", "debt_beating", "fight", "clue", "theft_report", "smuggling"):
         say(w, nid, f"{w.name(nid)}眉頭一皺，掏出一本皺巴巴的冊子記了幾筆：「這消息有用。」")
@@ -410,7 +526,7 @@ def h_tell(w, nid, fid):
         say(w, nid, f"{w.name(nid)}的臉色沉了下來：「你別胡說。」")
         w.adjust_opinion(nid, "player", -5)
     else:
-        say(w, nid, f"{w.name(nid)}聽完，若有所思地點了點頭。")
+        say(w, nid, speech.pick(w, nid, HEARD_IT).format(n=w.name(nid)))
         w.adjust_opinion(nid, "player", 1)
 
 
@@ -626,7 +742,7 @@ def h_alms(w, nid, _):
     fid = w.pick_weighted(opts)
     if fid:
         shared = behaviors.tell(w, nid, "player", fid)
-        say(w, nid, f"{w.name(nid)}側著頭，壓低聲音：「{T.fact_text(w, w.facts[shared], speaker=nid)}」")
+        say(w, nid, f"{w.name(nid)}側著頭，壓低聲音：「{speech.spoken(w, w.facts[shared], speaker=nid, owner=nid)}。」")
     else:
         say(w, nid, f"{w.name(nid)}想了半天：「最近……倒是安靜得很。」")
 

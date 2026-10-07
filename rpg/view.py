@@ -10,6 +10,7 @@ tests/test_view_hiding.py 會掃整包輸出，確認沒有內部欄位外洩。
 from __future__ import annotations
 
 from . import player as player_mod
+from . import speech
 from .content import text as T
 from .content.locations import LOCATIONS, NIGHT_PERIODS, PERIODS
 
@@ -29,20 +30,24 @@ def src_label(w, src: str) -> str:
 
 
 def journal(w, limit: int = 80) -> list[dict]:
+    """見聞錄：以「一件事」為單位。同一個人接連出的事合成一條，顯示最新的日子與消息來源。"""
     out = []
-    for fid, info in w.player["knows"].items():
-        f = w.facts.get(fid)
-        if not f or f["type"] in ("player_work",):
-            continue
-        people = sorted({w.name(r) for r in f["roles"].values() if r in w.npcs})
+    for facts in speech.stories_of(w, "player").values():
+        latest = facts[-1]
+        info = w.player["knows"][latest["id"]]
+        people = sorted({w.name(r) for f in facts for r in f["roles"].values() if r in w.npcs})
         out.append({
-            "key": fid,
-            "day": w.display_day(f["day"]),
-            "text": T.fact_text(w, f),
+            "key": facts[0]["id"],
+            "day": w.display_day(latest["day"]),
+            "text": (speech.story_text(w, facts, timed=False, owner="_journal") + "。") if len(facts) > 1
+            else T.fact_text(w, latest),
             "source": src_label(w, info["src"]),
             "people": people,
+            "_order": latest["id"],
         })
-    out.sort(key=lambda e: (e["day"], e["key"]), reverse=True)
+    out.sort(key=lambda e: (e["day"], int(e["_order"][1:]) if e["_order"][1:].isdigit() else 0), reverse=True)
+    for e in out:
+        e.pop("_order")
     return out[:limit]
 
 

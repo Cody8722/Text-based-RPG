@@ -28,7 +28,7 @@ def intro_beats(w: World) -> list[dict]:
 
 def gate_hook(w: World) -> list[dict]:
     """守門的老兵打量新來的人，順口提一件鎮上最近的大事——從世界自己發生過的事裡挑，不是寫死的劇情。"""
-    from .content import text as T
+    from . import speech
 
     if not w.free("wu") or w.npcs["wu"]["location"] != "gate":
         return []
@@ -44,7 +44,8 @@ def gate_hook(w: World) -> list[dict]:
     w.learn("wu", best["id"], "town")
     w.learn("player", best["id"], "wu")
     return [{"kind": "speech", "text": f"城門洞裡，一個瘸腿的老兵從竹椅上抬起眼皮打量你：「外地來的？最近鎮上不太平——"
-                                         f"{T.fact_text(w, best, speaker='wu')}你自己當心點。」"}]
+                                         f"{speech.story_text(w, speech.story_facts(w, 'wu', speech.story_key(best)), speaker='wu', owner='wu')}。"
+                                         f"你自己當心點。」"}]
 
 
 class Game:

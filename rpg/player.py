@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import math
 
-from . import behaviors, dialogue, sim
+from . import behaviors, dialogue, sim, speech
 from .content import text as T
 from .content.locations import LOCATIONS, NIGHT_PERIODS
-from .world import TICKS_PER_PERIOD, World
+from .world import TICKS_PER_DAY, TICKS_PER_PERIOD, World
 
 BACKGROUNDS = {
     "scholar": {"name": "落魄書生", "money": 40, "prowess": 3.0,
@@ -135,7 +135,7 @@ def available_actions(w: World) -> list[dict]:
         out.append(act("sleep_temple", "在廟簷下將就睡一晚", "here"))
     if loc == "gate":
         out.append(act("notices", "看看告示牌上貼了什麼", "here"))
-    if loc in ("market", "tavern", "inn", "pharmacy") and p["money"] < 40:
+    if loc in ("market", "tavern", "inn", "pharmacy") and p["money"] < 40 and p.get("watched", {}).get(loc, -1) < w.clock:
         out.append(act("steal", "趁人不注意，摸點錢", "here", hint="risky"))
     if p["inventory"].get("medicine", 0) > 0:
         out.append(act("inventory", f"身上帶著{p['inventory']['medicine']}帖藥", "self", hint="info"))
@@ -195,7 +195,7 @@ def perform(w: World, action_id: str, text: str | None = None) -> list[dict]:
     elif kind == "look":
         do_look(w)
     elif kind == "wait":
-        sim.beat(w, "action", "你找了個地方站著，看著來來往往的人。")
+        sim.beat(w, "action", speech.pick(w, "_wait", WAIT_TEXT))
         sim.advance(w, COST["wait"])
     elif kind == "work_dock":
         do_work_dock(w)
@@ -212,9 +212,7 @@ def perform(w: World, action_id: str, text: str | None = None) -> list[dict]:
     elif kind == "steal":
         do_steal(w)
     elif kind == "jail_wait":
-        sim.beat(w, "action", "拘房裡又冷又潮，你靠著牆，聽著外頭的聲音，一個時辰一個時辰地熬。")
-        sim.advance_to_next_dawn(w)
-        check_release(w)
+        jail_day(w)
     elif kind == "jail_bribe":
         w.transfer("player", "xiaoli", 30)
         p["jailed_until"] = 0
@@ -236,16 +234,22 @@ def after_action(w: World):
         here = (n["status"] == "normal" and n["location"] == p["location"]) or (n["status"] == "jailed" and p["location"] == "yamen")
         if not here:
             p["talking_to"] = None
-            sim.beat(w, "action", f"{w.name(nid)}說還有事要忙，先走了。")
+            sim.beat(w, "action", speech.pick(w, "_leave", LEAVE_TEXT).format(n=w.name(nid)))
     for nid in w.present_npcs(p["location"]):
         p["last_seen"][nid] = {"day": w.day, "place": p["location"]}
     check_collapse(w)
 
 
 def spread_town_news(w: World):
-    """大事會在鎮上口耳相傳：每天清晨把前一天的大消息散給所有人（包括玩家）。"""
+    """大事會在鎮上口耳相傳：每天清晨把前一天的大消息散給所有人（包括玩家）。
+
+    玩家這邊以「故事」為單位：同一個人一天裡出了三件事，清晨只聽到一段街談；
+    一早最多聽兩段，其餘的默默記進見聞錄。"""
+    from . import reactions
+
     items = w.flags.get("_town_news", [])
     keep = []
+    heard: dict[str, int] = {}
     for fid in items:
         f = w.facts.get(fid)
         if not f:
@@ -254,15 +258,18 @@ def spread_town_news(w: World):
             for nid, n in w.npcs.items():
                 if n["status"] in ("normal", "jailed") and fid not in n["knows"]:
                     n["knows"][fid] = {"day": w.day, "src": "town"}
-                    from . import reactions
-
                     reactions.on_learn(w, nid, fid, "town")
             if fid not in w.player["knows"] and not jailed(w) and w.player.get("arrived", True):
+                key = speech.story_key(f)
+                if key not in heard:
+                    heard[key] = len(speech.story_facts(w, "player", key))
                 w.player["knows"][fid] = {"day": w.day, "src": "town"}
-                sim.beat(w, "news", "鎮上都在傳：" + T.fact_text(w, f), fid)
         else:
             keep.append(fid)
     w.flags["_town_news"] = keep
+    stories = [(k, speech.story_facts(w, "player", k), before) for k, before in heard.items()]
+    for line in speech.dawn_digest(w, stories):
+        sim.beat(w, "news", line)
 
 
 def check_release(w: World):
@@ -312,19 +319,37 @@ def do_move(w: World, dest: str):
 
 
 def do_look(w: World):
+    """四處看看：每個人在做什麼（依身分、地點、時辰），外表看得出的異樣才特別提；
+    剛看過、人也沒變，就只說一句沒什麼變化。"""
     p = w.player
     loc = p["location"]
-    lines = []
-    for nid in w.present_npcs(loc):
-        n = w.npcs[nid]
-        who = w.name(nid) if nid in p["met"] else f"一個{n['role']}"
-        lines.append(f"{who}，{T.demeanor(w, n)}")
-    if lines:
-        sim.beat(w, "action", "你四處看了看。" + "；".join(lines) + "。")
+    here = w.present_npcs(loc)
+    snap = [loc, w.period, sorted(here), [T.demeanor(w, w.npcs[i]) for i in sorted(here)]]
+    if p.get("last_look") == snap:
+        sim.beat(w, "action", speech.pick(w, "_look", LOOK_SAME))
     else:
-        sim.beat(w, "action", "你四處看了看，這裡現在沒什麼人。")
+        lines = [look_line(w, nid) for nid in here]
+        if lines:
+            sim.beat(w, "action", speech.pick(w, "_look", LOOK_OPEN) + "；".join(lines) + "。")
+        else:
+            sim.beat(w, "action", speech.pick(w, "_look", LOOK_EMPTY))
+    p["last_look"] = snap
     find_clue(w, loc)
     sim.advance(w, COST["look"])
+
+
+def look_line(w: World, nid: str) -> str:
+    p = w.player
+    n = w.npcs[nid]
+    who = w.name(nid) if nid in p["met"] else f"一個{n['role']}"
+    dem = T.demeanor(w, n)
+    if n["status"] == "jailed":
+        return f"{who}{dem}"
+    acts = T.ACTIVITY.get(n.get("voice_key", nid), {}).get(p["location"]) or T.PLACE_ACTIVITY.get(p["location"], ["站在一旁"])
+    doing = speech.pick(w, f"_act:{nid}", acts)
+    if dem in ("看不出什麼異樣", "神情輕鬆"):
+        return f"{who}{doing}"
+    return f"{who}{doing}，{dem}"
 
 
 def find_clue(w: World, loc: str):
@@ -388,7 +413,8 @@ def overhear(w: World, loc: str, chance: float):
         fid = w.pick_weighted(opts)
         if fid:
             w.learn("player", fid, t)
-            sim.beat(w, "overheard", f"隔壁桌的{w.name(t)}說得正起勁：「{T.fact_text(w, w.facts[fid], speaker=t, listener='others')}」", fid)
+            body = speech.spoken(w, w.facts[fid], speaker=t, listener="others", owner=t)
+            sim.beat(w, "overheard", speech.pick(w, "_overhear", OVERHEAR).format(n=w.name(t), s=body), fid)
             return
 
 
@@ -436,20 +462,27 @@ def do_sleep(w: World, inn: bool):
 
 def do_notices(w: World):
     p = w.player
-    found = 0
+    keys = []
     for fid in reversed(w.event_log[-200:]):
         f = w.facts[fid]
         if f["day"] < w.day - 6 or f["secrecy"] != "public" or f["importance"] < 3:
             continue
         if f["type"] not in ("arrest", "evicted", "death", "trader", "property_seized", "fled", "theft_report", "fire"):
             continue
-        if w.learn("player", fid, "notice"):
-            sim.beat(w, "news", "告示牌上寫著：" + T.fact_text(w, f), fid)
-            found += 1
-        if found >= 3:
-            break
-    if not found:
-        sim.beat(w, "action", "告示牌上都是些舊告示，沒什麼新鮮事。")
+        key = speech.story_key(f)
+        if key not in keys and len(keys) >= 3:
+            continue
+        if w.learn("player", fid, "notice") and key not in keys:
+            keys.append(key)
+    if keys:
+        items = [speech.story_text(w, [x for x in speech.story_facts(w, "player", k) if x["type"] in NOTICE_TYPES]
+                                   or speech.story_facts(w, "player", k), owner="_notice") for k in keys]
+        sim.beat(w, "board", "告示牌上新貼了幾張告示：" + "；".join(items) + "。" if len(items) > 1 else
+                 "告示牌上新貼了一張告示：" + items[0] + "。")
+    else:
+        sim.beat(w, "action", speech.pick(w, "_notice", ["告示牌上都是些舊告示，沒什麼新鮮事。",
+                                                         "告示牌上的紙被風吹得卷了邊，沒有新貼的。",
+                                                         "還是那幾張舊告示，字都褪色了。"]))
     if p["background"] == "scholar":
         w.adjust_opinion("wu", "player", 2)
     sim.advance(w, COST["notices"])
@@ -467,14 +500,19 @@ def do_steal(w: World):
     here = w.free(victim) and w.npcs[victim]["location"] == loc
     chance = 55 + prowess(w) * 2 - (25 if here else 0)
     watchers = sim.witnesses_at(w, loc, exclude=("player", victim), notice_pct=20)
+    watched = p.setdefault("watched", {})
     if w.roll(chance) and not (here and w.roll(30)):
         got = w.transfer(victim, "player", max(5, min(60, w.money(victim) // 5)))
         fid = w.add_fact("theft", {"thief": "player", "victim": victim}, place=loc, data={"amount": got},
                          secrecy="secret", importance=4, witnesses=watchers)
         deed(w, fid)
         w.flags.setdefault("_undiscovered", []).append(fid)
-        sim.beat(w, "action", f"你的手指輕輕一勾，{got}文錢滑進了袖子。心跳得厲害，但沒有人回頭。" +
-                 ("……你好像感覺到有一道視線落在你背上。" if watchers else ""), fid)
+        # 剛得手，這裡暫時不能再下手：錢少了很快會被發現
+        watched[loc] = w.clock + TICKS_PER_PERIOD * 3
+        text = speech.pick(w, "_steal_ok", STEAL_OK).format(amt=got, v=w.name(victim) if victim in p["met"] else "掌櫃")
+        if watchers:
+            text += speech.pick(w, "_steal_eye", ["……你好像感覺到有一道視線落在你背上。", "轉身時，你瞥見角落有人飛快地別開了臉。"])
+        sim.beat(w, "action", text, fid)
     else:
         fid = w.add_fact("caught_stealing", {"thief": "player", "victim": victim}, place=loc, importance=4,
                          known_by=[victim] if here else [], witnesses=sim.witnesses_at(w, loc, exclude=("player",)))
@@ -483,8 +521,32 @@ def do_steal(w: World):
             w.adjust_opinion(victim, "player", -50)
             w.npcs[victim].setdefault("to_report", []).append(fid)
         w.flags.setdefault("_town_news", []).append(fid)
-        sim.beat(w, "action", "你的手才剛伸出去，就被人一把抓住——「好啊，青天白日的做賊！」四周的目光全落在你身上。", fid)
+        # 被逮過的地方，兩天內大家都盯著你；人也被轟了出去
+        watched[loc] = w.clock + TICKS_PER_DAY * 2
+        pool = STEAL_CAUGHT_OWNER if here else STEAL_CAUGHT
+        sim.beat(w, "action", speech.pick(w, "_steal_bad", pool).format(v=w.name(victim)), fid)
+        if loc != "street":
+            p["location"] = "street"
+            p["talking_to"] = None
+            sim.beat(w, "action", speech.pick(w, "_steal_out", ["你被推搡著趕到了長街上，背後還有人在罵。",
+                                                                "幾隻手把你架了出去，一路推到長街上。"]))
     sim.advance(w, COST["steal"])
+
+
+def jail_day(w: World):
+    """在拘房裡熬一天：每天的感受不同，偶爾聽見外頭的動靜。"""
+    p = w.player
+    n = p.get("jail_days", 0)
+    p["jail_days"] = n + 1
+    pool = JAIL_DAYS[min(n, len(JAIL_DAYS) - 1)]
+    sim.beat(w, "action", speech.pick(w, "_jail", pool))
+    sounds = [x for x in JAIL_SOUNDS if ("{zhao}" not in x or w.free("zhao")) and ("{li}" not in x or w.free("xiaoli"))]
+    if speech.chance(w, "_jail", 70):
+        sim.beat(w, "ambient", speech.pick(w, "_jail_sound", sounds).format(zhao=w.name("zhao"), li=w.name("xiaoli")))
+    sim.advance_to_next_dawn(w)
+    check_release(w)
+    if not jailed(w):
+        p["jail_days"] = 0
 
 
 def player_daily(w: World):
@@ -497,7 +559,7 @@ def player_daily(w: World):
     else:
         p["hungry_days"] += 1
         w.hurt("player", 8)
-        sim.beat(w, "system", "你的肚子餓得咕咕叫。身上的錢已經不夠吃一頓飯了。")
+        sim.beat(w, "system", HUNGER[min(p["hungry_days"], len(HUNGER)) - 1])
     if w.player["health"] < 100 and not p.get("hungry_days"):
         w.heal("player", 3)
 
@@ -658,3 +720,32 @@ def _beat_player(w: World, c: str, ln: dict, loc: str):
                      importance=4, known_by=[c], witnesses=sim.witnesses_at(w, loc, exclude=(c,)))
     w.learn("player", fid, "self")
     sim.beat(w, "action", f"{w.name(c)}的拳頭落在你的肚子上，你彎下腰，又挨了兩腳。「這是利息。」", fid)
+
+
+# ---------------- 玩家動作的文字（跨角色共用：不寫代名詞） ----------------
+HUNGER = ["你的肚子餓得咕咕叫。身上的錢已經不夠吃一頓飯了。", "又是餓著肚子的一天，走路都有點發飄。",
+          "餓了好幾天，眼前一陣一陣發黑。再這樣下去撐不了多久。", "你已經記不得上一頓飽飯是什麼時候了，手腳都在發軟。"]
+WAIT_TEXT = ["你找了個地方站著，看著來來往往的人。", "你倚著牆，看了好一會兒人來人往。", "你找了塊石階坐下，讓時間慢慢過去。",
+             "你什麼也沒做，只是聽著周圍的聲音。", "你靠在簷下，數著過往的人。"]
+LEAVE_TEXT = ["{n}說還有事要忙，先走了。", "{n}看了看天色，匆匆走了。", "{n}朝你點點頭，轉身走開了。", "{n}被人叫走了。"]
+LOOK_OPEN = ["你四處看了看。", "你環顧四周。", "你打量著這裡的人。"]
+LOOK_SAME = ["你又看了一圈，跟剛才差不多。", "四周沒什麼變化。", "還是那幾個人，各做各的。"]
+LOOK_EMPTY = ["你四處看了看，這裡現在沒什麼人。", "四下空蕩蕩的，只有風。", "這會兒一個人影也沒有。"]
+OVERHEAR = ["隔壁桌的{n}說得正起勁：「{s}。」", "{n}跟旁人咬著耳朵，你聽見一句：「……{s}……」", "{n}的嗓門不小：「你們知道嗎？{s}！」"]
+NOTICE_TYPES = {"arrest", "evicted", "death", "trader", "property_seized", "fled", "theft_report", "fire"}
+STEAL_OK = ["你的手指輕輕一勾，{amt}文錢滑進了袖子。心跳得厲害，但沒有人回頭。",
+            "趁著{v}轉身招呼客人，你從錢匣邊撈了{amt}文。手心全是汗。",
+            "你裝作看貨，順手摸走了{amt}文，慢慢踱開。",
+            "一陣忙亂裡，{amt}文錢落進了你的袖口。沒人注意。"]
+STEAL_CAUGHT = ["你的手才剛伸出去，就被人一把抓住——「好啊，青天白日的做賊！」四周的目光全落在你身上。",
+                "「有賊！」不知道誰喊了一聲，幾個人一擁而上，把你按住。",
+                "你的手碰到錢的那一刻，旁邊一個夥計叫了起來。來不及了。"]
+STEAL_CAUGHT_OWNER = ["{v}一把扣住你的手腕：「好啊，偷到我頭上來了！」", "{v}早就在看你了，手一伸過去就被抓個正著：「你當我瞎了？」",
+                      "「放下！」{v}的聲音炸開來，所有人都轉過頭看你。"]
+JAIL_DAYS = [
+    ["拘房的稻草發著霉味，你靠著潮濕的牆坐下，聽著外頭的聲音一點點變遠。", "木柵關上的聲音在背後響起。拘房又冷又暗，只有高處一扇小窗透進一點光。"],
+    ["第二天。你數著牆上前人刻下的道道，數到一半就數亂了。", "又是一天。送來的飯是冷的，你還是吃完了。"],
+    ["你開始分得出外頭每個人的腳步聲。", "日子在這裡過得特別慢。你閉著眼，聽小窗外的麻雀吵架。"],
+]
+JAIL_SOUNDS = ["外頭傳來{zhao}的聲音，像是在問誰的話。", "{li}在門口打著哈欠，跟人抱怨今晚又輪到自己守夜。",
+               "門外有人在吵著要見捕頭，被擋了回去。", "遠處傳來賣糖人的鑼聲，叮——叮——。", "隔壁的木柵後面，有人整夜都在咳嗽。"]
