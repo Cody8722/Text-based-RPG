@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from . import behaviors, sim
 from .content import text as T
-from .content.npcs import CHATTER, NPCS
+from .content.npcs import CHATTER, NPCS, TALK
 
 TALK_KINDS = {"chat", "ask_news", "ask_about", "ask_self", "tell", "give", "lend", "collect", "give_med",
               "work", "buy_med", "treat", "train", "borrow", "repay_own", "pay_for", "bribe_release", "bail",
@@ -87,7 +87,7 @@ def people_of_interest(w, exclude: str) -> list[str]:
 def talk_actions(w, nid) -> list[dict]:
     n = w.npcs[nid]
     p = w.player
-    out = [act("chat", "寒暄幾句", "talk"), act("ask_news", "問問最近鎮上有什麼事", "talk"),
+    out = [act("chat", talk_spec(w, nid)["label"], "talk"), act("ask_news", "問問最近鎮上有什麼事", "talk"),
            act("ask_self", f"問問{w.name(nid)}最近過得怎麼樣", "talk")]
     for ref in people_of_interest(w, nid):
         out.append(act(f"ask_about:{ref}", f"打聽{w.name(ref)}", "ask"))
@@ -234,6 +234,36 @@ def route_free_text(w, nid, text: str) -> tuple[str, str]:
 
 
 # ---------------- 各種談話動作 ----------------
+def talk_spec(w, nid) -> dict:
+    return TALK.get(w.npcs[nid].get("voice_key", nid), TALK["generic"])
+
+
+def chat_scene(w, nid) -> str:
+    """場景（在哪、白天晚上）× 這個人會聊的話題 × 交情與心情，組出寒暄的敘述。"""
+    n = w.npcs[nid]
+    p = w.player
+    loc = p["location"]
+    day_frames, night_frames = T.PLACE_FRAME.get(loc, (["在一旁"], ["在夜色裡"]))
+    frames = night_frames if w.period >= 4 else day_frames
+    frame = "坐在床邊" if n.get("bedridden") else "隔著木柵" if n["status"] == "jailed" else w.rng.choice(frames)
+    topics = talk_spec(w, nid)["topics"]
+    used = p.setdefault("topics_used", {}).setdefault(nid, [])
+    fresh = [t for t in topics if t not in used[-(len(topics) - 1):]] or topics
+    topic = w.rng.choice(fresh)
+    used.append(topic)
+    del used[:-6]
+    if n.get("bedridden"):
+        mood = "bedridden"
+    elif n["status"] == "jailed":
+        mood = "jailed"
+    elif n["stress"] >= 70:
+        mood = "stressed"
+    else:
+        mood = tier(w, nid)
+    reaction = w.rng.choice(T.CHAT_REACTION[mood]).format(n=w.name(nid))
+    return f"{frame}，你和{w.name(nid)}聊起{topic}。{reaction}"
+
+
 def h_chat(w, nid, _):
     p = w.player
     n = w.npcs[nid]
@@ -248,11 +278,7 @@ def h_chat(w, nid, _):
         say(w, nid, f"{w.name(nid)}：{line}")
     elif n.get("voice_key") in CHATTER and w.opinion(nid, "player") > -25:
         say(w, nid, f"{w.name(nid)}：{w.rng.choice(CHATTER[n['voice_key']])}")
-    sim.beat(w, "action", w.rng.choice([
-        f"你們東拉西扯地聊了一會兒，{w.name(nid)}的神情鬆了些。",
-        f"你陪{w.name(nid)}聊了聊天氣和生意，{w.name(nid)}說話的語氣比剛才和緩。",
-        f"{w.name(nid)}跟你抱怨了幾句日子難過，你聽著，偶爾附和兩聲。",
-    ]))
+    sim.beat(w, "action", chat_scene(w, nid))
     if w.roll(n["traits"]["gossip"] * 6 + w.opinion(nid, "player") / 3):
         share_one(w, nid, None, lead=True)
 
@@ -294,8 +320,9 @@ def h_ask_news(w, nid, _):
     if w.roll(40 + n["traits"]["gossip"] * 6 + bonus) and share_one(w, nid, None):
         return
     heard = w.player.setdefault("small_news", [])
-    fresh = [x for x in T.SMALL_NEWS if x not in heard[-3:]]
-    line = w.rng.choice(fresh or T.SMALL_NEWS)
+    pool = T.LOCAL_NEWS.get(w.player["location"], []) + T.SMALL_NEWS
+    fresh = [x for x in pool if x not in heard[-4:]]
+    line = w.rng.choice(fresh or pool)
     heard.append(line)
     say(w, nid, f"{w.name(nid)}想了想：{line}")
 
@@ -453,7 +480,8 @@ def h_work(w, nid, _):
     pay = w.rng.randint(6, 10)
     w.add_money("player", pay)
     w.adjust_opinion(nid, "player", 4)
-    sim.beat(w, "action", f"你在{w.name(nid)}那兒幫了兩個時辰的忙，搬東西、擦桌子、招呼客人，拿到{pay}文。")
+    chores = talk_spec(w, nid).get("work", "搬東西、打雜")
+    sim.beat(w, "action", f"你在{w.name(nid)}那兒幫了兩個時辰的忙，{chores}，拿到{pay}文。")
     w.player["talking_to"] = None
     sim.advance(w, 2)
 
