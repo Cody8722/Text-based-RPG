@@ -277,8 +277,10 @@ def llm_prompt(text: str, cands: dict) -> tuple[str, str, dict]:
 
 def validate_llm_intent(raw, cands: dict, text: str) -> dict | None:
     """白名單：target／means 必須是這次的候選 id（一字不差；「t7」不等於「t:t7」，不做任何補全），其餘欄位丟掉。"""
-    if not isinstance(raw, dict) or raw.get("verb") not in VERBS:
+    if not isinstance(raw, dict) or not isinstance(raw.get("verb"), str) or raw["verb"] not in VERBS:
         return None
+    if any(raw.get(k) is not None and not isinstance(raw.get(k), str) for k in ("target", "means", "modality", "purpose")):
+        return None   # 欄位只能是字串或 null（實測模型偶爾會回陣列）：不收，不猜
     tids = {c["id"] for c in cands["targets"]}
     mids = {m["id"] for m in cands["means"]}
     target = raw.get("target")

@@ -212,6 +212,9 @@ class ParserTests(unittest.TestCase):
         self.assertIsNone(intent.validate_llm_intent({"verb": "apply", "target": short}, cands, "x"))
         self.assertIsNone(intent.validate_llm_intent({"verb": "apply", "target": "p:nobody"}, cands, "x"))
         self.assertIsNone(intent.validate_llm_intent({"verb": "apply", "target": f"t:{tid}", "means": "a:zz"}, cands, "x"))
+        for odd in ({"verb": "apply", "target": [f"t:{tid}"]}, {"verb": ["apply"]}, {"verb": "apply", "means": {"id": 1}},
+                    {"verb": "apply", "modality": ["vibration"]}, ["apply"], None):
+            self.assertIsNone(intent.validate_llm_intent(odd, cands, "x"), odd)   # 形狀不對：不收，也不丟例外
         got = intent.validate_llm_intent({"verb": "apply", "target": f"t:{tid}", "outcome": "shattered"}, cands, "x")
         self.assertEqual(got["target"], f"t:{tid}")
         self.assertNotIn("outcome", got, "nothing beyond the closed fields survives")
