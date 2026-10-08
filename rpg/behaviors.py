@@ -8,7 +8,7 @@ LLM 完全不參與這一層。
 
 from __future__ import annotations
 
-from . import sim
+from . import mind, sim, views
 from .content.locations import LOCATIONS, NIGHT_PERIODS
 
 ACT_CHANCE = 0.33
@@ -100,6 +100,7 @@ def tell(w, teller: str, listener: str, fid: str) -> str:
             rid = w.add_fact(f["type"], roles, place=f["place"], data=f["data"], secrecy=f["secrecy"],
                              importance=f["importance"], truth=False, rumor_of=w.root_fact(fid)["id"], log=False)
             w.bump("rumor_distorted")
+            t["knows"].setdefault(rid, {"day": w.day, "src": "self"})   # 走樣的版本是講的人自己說出口的
             w.learn(listener, rid, teller)
             return rid
     if f["type"] == "theft_report" and w.roll(tr(t, "gossip") * 3 + (10 - tr(t, "honesty")) * 3, lo=0, hi=60):
@@ -116,7 +117,7 @@ def tell(w, teller: str, listener: str, fid: str) -> str:
             w.learn(listener, aid, teller)
             t["knows"].setdefault(aid, {"day": w.day, "src": "self"})
             return aid
-    w.learn(listener, fid, teller)
+    w.learn(listener, fid, teller, view=views.retell(w, teller, listener, fid))
     return fid
 
 
@@ -150,7 +151,7 @@ def r_gossip(w, n):
     w.bump("gossip")
     # 玩家在旁邊：有機會聽到一耳朵
     if sim.player_here(w, n["location"]) and w.rng.random() < 0.3:
-        if w.learn("player", shared, n["id"]):
+        if w.learn("player", shared, n["id"], view=views.retell(w, n["id"], "player", shared)):
             from .content import text as T
 
             sim.beat(w, "overheard", f"你聽見{w.name(n['id'])}壓低聲音對{w.name(listener)}說：「{T.fact_text(w, w.facts[shared], speaker=n['id'], listener=listener)}」", shared)
@@ -262,9 +263,11 @@ def find_lender(w, n, amount):
     for lid, l in w.npcs.items():
         if lid == n["id"] or l["status"] != "normal" or lid == "qian" or l.get("bedridden") or lid in n.get("family", []):
             continue
-        if w.opinion(n["id"], lid) >= 25 and w.opinion(lid, n["id"]) >= 35 and l["money"] >= amount + 30 and tr(l, "kind") >= 5:
+        if w.opinion(n["id"], lid) >= 25 and w.opinion(lid, n["id"]) >= 35 and \
+                mind.perceived_wealth(w, n["id"], lid) >= amount + 30 and tr(l, "kind") >= 5:
             best.append((lid, w.opinion(lid, n["id"]) + tr(l, "kind") * 5))
-    if w.free("su") and n["id"] != "su" and amount <= 60 and w.opinion("su", n["id"]) >= 0 and w.money("su") >= amount + 40:
+    if w.free("su") and n["id"] != "su" and amount <= 60 and w.opinion("su", n["id"]) >= 0 and \
+            mind.perceived_wealth(w, n["id"], "su") >= amount + 40:
         best.append(("su", 40))
     return w.pick_weighted(best)
 
@@ -353,14 +356,17 @@ def steal_targets(w, n):
         owner = p["owner"]
         if owner == n["id"] or owner not in w.npcs or w.npcs[owner]["status"] == "dead":
             continue
-        if w.money(owner) >= 25 and w.opinion(n["id"], owner) < 40:
-            weight = min(6, w.money(owner) / 50) + (3 if w.opinion(n["id"], owner) < 0 else 0)
+        # 看的是「覺得對方有錢」，不是對方錢包裡的真實數字
+        guess = mind.perceived_wealth(w, n["id"], owner)
+        if guess >= 25 and w.opinion(n["id"], owner) < 40:
+            weight = min(6, guess / 50) + (3 if w.opinion(n["id"], owner) < 0 else 0)
             if p["place"] == "den":
                 if tr(n, "courage") < 6:
                     continue   # 沒膽子的人不敢動錢三爺的錢
                 weight /= 3
             out.append((p["place"], owner, weight))
-    if w.money("player") >= 25 and w.player["location"] == n["location"] and w.opinion(n["id"], "player") < 30:
+    if mind.perceived_wealth(w, n["id"], "player") >= 25 and w.player["location"] == n["location"] and \
+            w.opinion(n["id"], "player") < 30:
         out.append((n["location"], "player", 3))
     return out
 
@@ -490,10 +496,11 @@ def strength(w, ref):
     if ref == "player":
         from .player import prowess
 
-        return prowess(w) * 1.2 + w.player["health"] / 25
+        return prowess(w) * 1.2 + w.player["health"] / 25 + mind.power_of(w, "player") * 0.5
     n = w.npcs[ref]
     base = tr(n, "courage") * 0.6 + tr(n, "temper") * 0.3 + n["health"] / 25
-    return base + {"tie": 6, "aniu": 5, "shitou": 4, "liu6": 2, "zhao": 4}.get(ref, 0)
+    # 體內練出來的東西（內丹之類）是真實的力量來源：受損了，人就變弱
+    return base + {"tie": 4, "aniu": 5, "shitou": 4, "liu6": 2, "zhao": 4}.get(ref, 0) + mind.power_of(w, ref) * 0.5
 
 
 def r_fight(w, n):
@@ -557,7 +564,7 @@ def w_report(w, n):
     if not f:
         n["to_report"] = pend[1:]
         return 0
-    culprit = w.culprit_of(f)
+    culprit = mind.believed_actor(w, n["id"], fid)
     fear = 4 if culprit in ("qian", "liu6", w.flags.get("collector2")) and tr(n, "courage") < 6 else 0
     near = 2 if n["location"] in ("yamen", "street", w.npcs["zhao"]["location"]) else 0.6
     return max(0, (tr(n, "honesty") - 3 + n["blame"].get(culprit, 0) / 20 - fear) * near)
@@ -567,7 +574,11 @@ def r_report(w, n):
     fid = n["to_report"].pop(0)
     if w.npcs["zhao"]["location"] != n["location"]:
         n["location"] = "yamen" if w.npcs["zhao"]["location"] == "yamen" else w.npcs["zhao"]["location"]
-    w.learn("zhao", fid, n["id"])
+    view = views.retell(w, n["id"], "zhao", fid)
+    if not w.learn("zhao", fid, n["id"], view=view) and view and view.get("actor"):
+        zv = w.npcs["zhao"]["knows"][fid].get("view")
+        if zv is not None and not zv.get("actor"):      # 之前報的是「不知道是誰」，現在報上了名字
+            zv["actor"] = view["actor"]
     w.bump("reports")
 
 

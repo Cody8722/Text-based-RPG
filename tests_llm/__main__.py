@@ -45,7 +45,7 @@ def main(argv=None) -> int:
         print(f"LLM UNAVAILABLE — {why}\nAll real-model tests skipped (this is an environment condition, not a game failure).")
         return 3 if a.require else 0
 
-    suite = unittest.defaultTestLoader.loadTestsFromName("tests_llm.llm_narrator_e2e")
+    suite = unittest.defaultTestLoader.loadTestsFromNames(["tests_llm.llm_understanding_e2e", "tests_llm.llm_narrator_e2e"])
     if a.only:
         def keep(t):
             return any(k in t.id() for k in a.only)

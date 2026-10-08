@@ -17,7 +17,21 @@ const { chromium } = require("playwright");
   await page.waitForSelector(".bg-card");
   if ((await page.locator(".bg-card").count()) !== 3) await fail("expected 3 backgrounds");
   await page.locator(".bg-card").first().click();
+  // 角色設定：選一項固定技能、寫一段自訂天賦
+  await page.waitForSelector("#char-pick:not([hidden])");
+  if ((await page.locator(".chip").count()) < 4) await fail("expected the skill pool");
+  await page.locator(".chip").first().click();
+  await page.fill("#talent", "前世是一名研究超聲波的醫生。我帶著一把老菜刀。");
+  await page.click("#char-go");
   await page.waitForSelector("#game:not([hidden])");
+  // 自由行動：輸入一句沒有預設選項的話，世界要有回應（不卡住、不報錯）
+  {
+    const before = await page.locator(".turn").count();
+    await page.fill(".do-row input", "我想仔細感覺一下自己的身體");
+    await page.click(".do-row button");
+    await page.waitForFunction((n) => document.querySelectorAll(".turn").length > n, before, { timeout: 5000 }).catch(() => {});
+    if ((await page.locator(".turn").count()) <= before) await fail("free action produced no turn");
+  }
   const turns0 = await page.locator(".turn").count();
 
   const click = async (selector) => {

@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from . import behaviors, reactions
+from . import behaviors, mind, reactions
 from .content import text as T
 from .content.locations import LOCATIONS, NIGHT_PERIODS
 from .content.npcs import DRIFTER_GIVEN, DRIFTER_ROLES, DRIFTER_SURNAMES
@@ -582,6 +582,24 @@ def check_death(w: World, nid: str, cause_fid: str | None, cause_text: str, atta
 
 
 # ---------------- 健康 ----------------
+def things_daily(w: World):
+    """體內的東西會發作：有成因的病灶偶爾造成症狀（看得到的是症狀，成因要診察才知道）。"""
+    from .content.nature import CAUSES
+
+    for t in list(w.things.values()):
+        if not t["active"] or not t["host"] or t["host"] not in w.npcs:
+            continue
+        n = w.npcs[t["host"]]
+        c = CAUSES.get(t.get("cause") or "")
+        if n["status"] != "normal" or not c or not c["flare_pct"]:
+            continue
+        if w.roll(c["flare_pct"], lo=0, hi=50):
+            w.hurt(n["id"], c["hurt"])
+            n["symptom_until"] = w.day + 1
+            w.stress(n["id"], 8)
+            check_death(w, n["id"], None, "舊疾發作")
+
+
 def health_daily(w: World):
     for nid, n in w.npcs.items():
         if n["status"] not in ("normal", "jailed"):
@@ -613,6 +631,9 @@ def health_daily(w: World):
             n["ill_days"] = n.get("ill_days", 0) - 1
             if n["ill_days"] <= 0 and n["health"] >= 50:
                 n["condition"] = "healthy"
+                for t in mind.things_of(w, nid, held=False):
+                    if t["kind"] == "inflamed":
+                        t["active"] = False
                 w.add_fact("recovered", {"who": nid}, secrecy="private", importance=1, known_by=[nid])
             check_death(w, nid, None, "一場急病")
         elif n["condition"] == "injured" or n["health"] < 100:
@@ -624,8 +645,11 @@ def health_daily(w: World):
             n["condition"] = "ill"
             n["ill_days"] = w.rng.randint(3, 6)
             w.hurt(nid, 25)
+            # 病有成因：一個真實存在、診察得到的病灶（好了就會消失）
+            mind.add_thing(w, "inflamed", host=nid, origin="ill")
             w.add_fact("ill", {"who": nid}, place=n["home"], secrecy="public", importance=2,
                        known_by=[nid] + w.family_of(nid))
+    things_daily(w)
     # 暗中的資助者：每隔幾天替病人買藥
     for nid, n in w.npcs.items():
         pat = n.get("patron_of")
@@ -738,7 +762,7 @@ def do_arrest(w: World, case_id: str, suspect: str):
         if case:
             case["status"] = "open"
         return
-    charge = {"theft": "偷竊", "theft_report": "偷竊", "caught_stealing": "偷竊", "debt_beating": "傷人",
+    charge = {"theft": "偷竊", "theft_report": "偷竊", "caught_stealing": "偷竊", "debt_beating": "傷人", "act": "傷人",
               "fight": "鬥毆傷人", "smuggling": "私運"}.get(case["type"], "犯事")
     if suspect == "player":
         if w.player.get("jailed_until", 0) >= w.day:
@@ -877,6 +901,7 @@ def spawn_drifter(w: World, role_index: int | None = None) -> str | None:
     w.drifter_seq += 1
     nid = f"d{w.drifter_seq}"
     role, work, traits, look = DRIFTER_ROLES[role_index if role_index is not None else w.rng.randrange(len(DRIFTER_ROLES))]
+    from .content.nature import DRIFTER_NATURE
     name = w.rng.choice(DRIFTER_SURNAMES) + w.rng.choice(DRIFTER_GIVEN)
     base = {"kind": 5, "greed": 5, "temper": 5, "courage": 5, "honesty": 5, "gossip": 4, "pride": 5, "vice": 3}
     base.update(traits)
@@ -892,6 +917,13 @@ def spawn_drifter(w: World, role_index: int | None = None) -> str | None:
     n["voice_key"] = "generic"
     n["location"] = "gate"
     w.npcs[nid] = n
+    domains, senses, kinds = DRIFTER_NATURE.get(role, ([], {}, []))
+    mind.init_mind(n, domains, senses)
+    for kind in kinds:
+        tid = mind.add_thing(w, kind, host=nid, origin="arrival")
+        noticed = mind.noticeable(w, n, w.things[tid], contact=True)
+        if noticed:
+            mind.believe_thing(w, nid, tid, noticed, "self")
     fid = w.add_fact("arrival", {"who": nid}, place="gate", data={"role": role}, importance=1,
                      known_by=[nid, "wu"], witnesses=witnesses_at(w, "gate", exclude=(nid,)))
     emit(w, fid, "gate")

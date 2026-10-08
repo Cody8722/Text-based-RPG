@@ -144,6 +144,12 @@ def fact_text(w, f: dict, speaker: str | None = None, listener: str = "player") 
         return f"{g('who')}認定是{g('target')}害的，放話絕不放過{g('target')}。"
     if t == "hired":
         return f"{g('owner')}雇了{g('who')}到{_loc(d.get('place'))}幹活。"
+    if t == "act":
+        from .. import views
+
+        knower = speaker or listener
+        info = (w.ent(knower)["knows"].get(f["id"]) if knower == "player" or knower in w.npcs else None) or {}
+        return views.render(w, f, info.get("view"), speaker=speaker, listener=listener) + "。"
     if t == "player_work":
         return f"{g('who')}在{_loc(f['place'])}幹了一陣活。"
     return f"（{t}）"

@@ -42,16 +42,41 @@
     for (const c of d.choices) {
       const card = el("button", "bg-card");
       card.append(el("h3", null, c.name), el("p", null, c.desc));
-      card.onclick = async () => {
-        card.disabled = true;
-        try { enter(await api("/api/new", { background: c.key })); } catch (e) { toast(e.message); card.disabled = false; }
-      };
+      card.onclick = () => pickCharacter(c, d.skills);
       box.append(card);
     }
     $("#start-buttons").hidden = true;
     $("#bg-pick").hidden = false;
   };
   $("#bg-back").onclick = () => { $("#start-buttons").hidden = false; $("#bg-pick").hidden = true; };
+
+  // 出身之後：固定技能（最多兩項）＋自由填寫的天賦
+  function pickCharacter(bg, skills) {
+    const chosen = new Set();
+    const box = $("#skill-chips");
+    box.replaceChildren();
+    for (const s of skills) {
+      const chip = el("button", "chip");
+      chip.append(el("span", null, s.name), el("small", null, s.desc));
+      chip.onclick = () => {
+        if (chosen.has(s.key)) chosen.delete(s.key);
+        else if (chosen.size < (s.max || 2)) chosen.add(s.key);
+        else return toast(`最多選${s.max || 2}項`);
+        chip.classList.toggle("on", chosen.has(s.key));
+      };
+      box.append(chip);
+    }
+    $("#bg-pick").hidden = true;
+    $("#char-pick").hidden = false;
+    $("#char-back").onclick = () => { $("#char-pick").hidden = true; $("#bg-pick").hidden = false; };
+    $("#char-go").onclick = async () => {
+      $("#char-go").disabled = true;
+      try {
+        enter(await api("/api/new", { background: bg.key, skills: [...chosen], talent: $("#talent").value.trim() }));
+      } catch (e) { toast(e.message); }
+      $("#char-go").disabled = false;
+    };
+  }
   $("#btn-continue").onclick = async () => {
     try { enter(await api("/api/continue", {})); } catch (e) { toast(e.message); }
   };
@@ -141,8 +166,8 @@
   }
 
   // ---------------- actions ----------------
-  const ORDER = ["pending", "talk", "role", "ask", "tell", "money", "accuse", "people", "here", "move", "self"];
-  const TITLES = { pending: "此刻，你要怎麼做？", talk: "交談", ask: "打聽某人", tell: "說出你知道的事", money: "錢與東西",
+  const ORDER = ["clarify", "pending", "talk", "role", "ask", "tell", "money", "accuse", "people", "here", "move", "self"];
+  const TITLES = { clarify: "你是想……？", pending: "此刻，你要怎麼做？", talk: "交談", ask: "打聽某人", tell: "說出你知道的事", money: "錢與東西",
     role: "其他", accuse: "向捕頭指認", people: "這裡的人", here: "此地", move: "前往", self: "自己" };
   const COLLAPSED = new Set(["ask", "tell", "accuse", "money"]);
 
@@ -153,6 +178,18 @@
       const c = el("div", "convo");
       c.append(el("span", "who", `與${v.conversation.name}交談`), el("span", "att", `${v.conversation.look}；${v.conversation.attitude}`));
       box.append(c);
+    }
+    if (!v.pending) {
+      // 自由行動：玩家可以提出任何想法；世界決定實際會發生什麼
+      const row = el("form", "do-row");
+      const inp = el("input");
+      inp.placeholder = "你想做什麼？（自由描述，例如：我想仔細看看他哪裡不舒服）";
+      inp.maxLength = 200;
+      const go = el("button", null, "做");
+      go.type = "submit";
+      row.append(inp, go);
+      row.onsubmit = (e) => { e.preventDefault(); const t = inp.value.trim(); if (t) act("do", t); };
+      box.append(row);
     }
     const groups = {};
     for (const a of v.actions) (groups[a.group] = groups[a.group] || []).push(a);
@@ -226,7 +263,7 @@
   }
 
   document.addEventListener("keydown", (e) => {
-    if (e.target.tagName === "INPUT" || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.metaKey || e.ctrlKey || e.altKey) return;
     if (/^[1-9]$/.test(e.key) && S.numbered && S.numbered[+e.key - 1]) {
       e.preventDefault();
       act(S.numbered[+e.key - 1]);
@@ -316,6 +353,23 @@
     stat("身子", pl.health_word);
     stat("身手", pl.prowess_word);
     stat("藥", pl.medicine ? `${pl.medicine} 帖` : "沒有");
+    const me = v.self || {};
+    kb.append(el("h3", null, "本事"));
+    kb.append(el("p", me.skills && me.skills.length ? "desc" : "empty", (me.skills || []).join("、") || "沒有特別學過什麼。"));
+    if (me.talent) { kb.append(el("h3", null, "你相信的自己")); kb.append(el("p", "desc", me.talent)); }
+    kb.append(el("h3", null, "你對身邊事物的理解"));
+    if (!(me.observations || []).length) kb.append(el("p", "empty", "還沒有特別留意到什麼。"));
+    for (const o of me.observations || []) {
+      const d = el("div", "obs", o.label);
+      const sub = [o.where, o.before.length ? `原本以為是：${o.before.join("、")}` : "", o.hypothesis ? `你的推測：${o.hypothesis}` : ""]
+        .filter(Boolean).join("；");
+      if (sub) d.append(el("div", "sub", sub));
+      kb.append(d);
+    }
+    if ((me.notes || []).length) {
+      kb.append(el("h3", null, "你的推測"));
+      for (const n of me.notes) kb.append(el("div", "obs", n));
+    }
     kb.append(el("h3", null, "你欠的"));
     if (!pl.debts.length) kb.append(el("p", "empty", "一身輕。"));
     for (const d of pl.debts) stat(d.to, `${d.amount} 文，第${d.due_day}日前`);

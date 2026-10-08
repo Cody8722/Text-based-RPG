@@ -125,6 +125,21 @@ details.group[open] > summary::before { content: "▾ "; }
 details.group .btns { flex-direction: column; align-items: stretch; }
 .person-btn { display: flex; flex-direction: column; align-items: flex-start; }
 .person-btn small { color: var(--ink-faint); font-size: 12px; }
+.char-pick { text-align: left; max-width: 640px; margin: 0 auto; }
+.char-pick .pick-hint small { font-size: 13px; color: var(--ink-faint); font-family: var(--sans); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.chip { background: var(--paper); border: 1px solid var(--line); border-radius: 18px; padding: 7px 14px; text-align: left; }
+.chip small { display: block; color: var(--ink-faint); font-size: 12px; max-width: 260px; line-height: 1.5; }
+.chip.on { border-color: var(--accent); background: var(--accent-soft); }
+#talent { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--line); border-radius: 4px;
+  background: var(--paper); color: var(--ink); font: inherit; line-height: 1.7; resize: vertical; }
+.pick-note { color: var(--ink-faint); font-size: 13px; margin: 8px 0 20px; }
+.do-row { display: flex; gap: 8px; margin: 2px 0 12px; }
+.do-row input { flex: 1; padding: 9px 11px; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); color: var(--ink); font: inherit; }
+.do-row button { background: var(--btn); border: 1px solid var(--line); border-radius: 4px; padding: 0 16px; }
+.k-player_say { color: var(--ink-soft); }
+.obs { padding: 7px 0; border-bottom: 1px solid var(--line); line-height: 1.6; }
+.obs .sub { color: var(--ink-faint); font-size: 13px; }
 .say-row { display: flex; gap: 8px; margin: 8px 0 4px; }
 .say-row input { flex: 1; padding: 8px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--ink); font: inherit; }
 .say-row button { background: var(--btn); border: 1px solid var(--line); border-radius: 4px; padding: 0 14px; }

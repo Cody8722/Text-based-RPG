@@ -20,10 +20,23 @@ def intro_beats(w: World) -> list[dict]:
     return [
         {"kind": "intro", "text": "青石鎮"},
         {"kind": "intro", "text": f"你是一個{bg['name']}。{bg['desc']}"},
+        *self_intro(w),
         {"kind": "intro", "text": f"官道走到盡頭，斑駁的城門出現在眼前。你摸了摸錢袋，裡頭只剩{w.player['money']}文。"
                                   "沒有人在等你，也沒有人知道你為什麼來——這個鎮子有它自己的日子要過。"},
         {"kind": "arrive", "text": "你來到鎮口。" + "斑駁的城門矗立在鎮子邊界，門邊的木牌上貼著幾張告示，有新有舊。"},
     ] + gate_hook(w)
+
+
+def self_intro(w: World) -> list[dict]:
+    from .content.nature import SKILLS
+
+    p = w.player
+    out = []
+    if p.get("skills"):
+        out.append({"kind": "intro", "text": "你會的本事：" + "、".join(SKILLS[s]["name"] for s in p["skills"]) + "。"})
+    if p.get("talent_text"):
+        out.append({"kind": "intro", "text": f"你心裡清楚自己的來歷：{p['talent_text']}"})
+    return out
 
 
 def gate_hook(w: World) -> list[dict]:
@@ -70,11 +83,17 @@ class Game:
             return [{"key": k, "name": player_mod.BACKGROUNDS[k]["name"], "desc": player_mod.BACKGROUNDS[k]["desc"]}
                     for k in self.offered]
 
-    def new(self, background: str, seed: int | None = None) -> dict:
+    @staticmethod
+    def skill_pool() -> list[dict]:
+        from .content.nature import MAX_SKILLS, SKILLS
+
+        return [{"key": k, "name": s["name"], "desc": s["desc"], "max": MAX_SKILLS} for k, s in SKILLS.items()]
+
+    def new(self, background: str, seed: int | None = None, skills=(), talent: str = "") -> dict:
         with self.lock:
             if background not in player_mod.BACKGROUNDS:
                 raise player_mod.ActionError("沒有這種出身")
-            self.world = new_world(seed, background)
+            self.world = new_world(seed, background, skills, talent, talent_llm=self.narrator.talent_llm())
             beats = intro_beats(self.world)
             self.save()
             return self.response(beats)
@@ -92,7 +111,7 @@ class Game:
         with self.lock:
             if self.world is None:
                 raise player_mod.ActionError("還沒開始遊戲")
-            beats = player_mod.perform(self.world, action_id, text)
+            beats = player_mod.perform(self.world, action_id, text, llm=self.narrator.intent_llm())
             self.save()
             return self.response(beats)
 

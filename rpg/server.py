@@ -66,7 +66,7 @@ def make_handler(game: Game, debug: bool):
                     return self._send(200, {"has_save": game.has_save(), "llm": game.narrator.enabled,
                                             "debug": debug, "in_game": game.world is not None})
                 if u.path == "/api/backgrounds":
-                    return self._send(200, {"choices": game.offer()})
+                    return self._send(200, {"choices": game.offer(), "skills": game.skill_pool()})
                 if u.path == "/api/view":
                     return self._send(200, game.current())
                 if u.path == "/api/narration":
@@ -87,7 +87,13 @@ def make_handler(game: Game, debug: bool):
                     bg = body.get("background")
                     if game.offered and bg not in game.offered:
                         raise ActionError("請從提供的出身裡選一個")
-                    return self._send(200, game.new(str(bg), seed if isinstance(seed, int) else None))
+                    skills = body.get("skills") or []
+                    talent = body.get("talent") or ""
+                    if not isinstance(skills, list) or len(skills) > 2 or not all(isinstance(s, str) for s in skills):
+                        raise ActionError("技能最多選兩項")
+                    if not isinstance(talent, str) or len(talent) > 400:
+                        raise ActionError("天賦描述太長了（四百字以內）")
+                    return self._send(200, game.new(str(bg), seed if isinstance(seed, int) else None, skills, talent))
                 if u.path == "/api/continue":
                     return self._send(200, game.resume())
                 if u.path == "/api/act":

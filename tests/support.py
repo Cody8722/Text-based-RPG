@@ -40,6 +40,23 @@ def random_play(w: World, steps: int, rng: random.Random, avoid=("steal",)) -> l
     return done
 
 
+def check_provenance(tc, w: World, msg: str = ""):
+    """知道一件事一定有來源：自己在場、親眼看到、全鎮都在傳、告示，或是聽某個「也知道這件事」的人說的。
+    自由行動造成的事（act）更嚴格：只有當事人是 self、只有在場的人是 witness、不會自己變成全鎮的消息。"""
+    holders = {"player": w.player, **w.npcs}
+    for who, e in holders.items():
+        for fid, info in e["knows"].items():
+            f = w.facts.get(fid)
+            src = info["src"]
+            if src in holders:
+                tc.assertIn(fid, holders[src]["knows"], f"{msg} {who} heard {fid} from {src}, who never knew it")
+            if f and f["type"] == "act":
+                if src == "self":
+                    tc.assertIn(who, (f["roles"].get("actor"), f["roles"].get("target")), f"{msg} {who} self-knows {fid}")
+                tc.assertNotIn(src, ("town", "notice"), f"{msg} act {fid} became public news by itself")
+                tc.assertIn("view", info, f"{msg} {who} knows act {fid} without a version of their own")
+
+
 def check_invariants(tc, w: World, where: str = ""):
     """世界在任何時刻都必須成立的事。tc 是 unittest.TestCase。"""
     msg = f"[seed={w.seed} day={w.day}{' ' + where if where else ''}]"
@@ -64,6 +81,7 @@ def check_invariants(tc, w: World, where: str = ""):
             tc.assertIn(fid, w.facts, f"{msg} {nid} knows missing fact")
     for fid in p["knows"]:
         tc.assertIn(fid, w.facts, msg)
+    check_provenance(tc, w, msg)
     for ln in w.loans.values():
         tc.assertIn(ln["status"], {"open", "repaid", "defaulted", "forgiven"}, msg)
         if ln["status"] == "open" and ln["borrower"] != "player" and not ln.get("garnish"):
@@ -139,7 +157,8 @@ class FakeOllama:
 
 def template_from_request(body: dict) -> str:
     user = body["messages"][-1]["content"]
-    return user.split("【本段已發生的事】\n", 1)[1]
+    # 說書以外的呼叫（解析自由行動、解析天賦）沒有這個段落：回空字串，讓呼叫端的驗證退回詞表解析
+    return user.split("【本段已發生的事】\n", 1)[1] if "【本段已發生的事】\n" in user else ""
 
 
 __all__ = ["World", "new_world", "idle_days", "random_play", "check_invariants", "FakeOllama", "template_from_request"]
