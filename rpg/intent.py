@@ -47,6 +47,8 @@ HELP_WORDS = ["救", "治", "幫", "病因", "緩解", "減輕", "好起來"]
 HARM_WORDS = ["殺", "傷", "打死", "弄死", "教訓", "報仇"]
 PERSON_PRONOUNS = ["這個人", "那個人", "對方", "病人", "他", "她"]
 THING_PRONOUNS = ["那個東西", "這個東西", "那東西", "這東西", "那顆", "這顆", "那塊", "這塊", "它", "異物", "硬塊", "團塊"]
+NEEDS_TARGET = ("examine", "apply", "tap", "treat", "strike", "give", "take", "talk")
+SELF_WORDS = ["我自己", "自己", "自身", "我身上", "我的身體"]
 INSIDE_WORDS = ["體內", "身體裡", "肚子", "肚裡", "腹中", "裡面", "身上"]
 
 
@@ -161,7 +163,7 @@ def parse_rules(w, text: str, cands: dict | None = None) -> tuple[dict | None, l
               "means": means["id"] if means else None, "purpose": purpose,
               "hypothesis": t if verb == "note" or any(x in t for x in NOTE_WORDS) else None, "text": t,
               "deep": any(x in t for x in INSIDE_WORDS)}
-    needs_target = intent["verb"] in ("examine", "apply", "tap", "treat", "strike", "give", "take", "talk")
+    needs_target = intent["verb"] in NEEDS_TARGET
     if verb and (target or not needs_target):
         return intent, []
     return None, clarify(w, intent, cands)
@@ -248,7 +250,9 @@ VERB_MEANING = {
 def codes(cands: dict) -> dict:
     """給 LLM 看的短代號 → 真正的候選 id。代號沒有冒號（實測模型會把「t:t7：石淋」截成 t7），
     依候選順序固定產生；伺服器自己對回去，模型永遠碰不到真正的 id 格式。"""
-    out = {f"T{i}": c["id"] for i, c in enumerate(cands["targets"], 1)}
+    # 「你自己」排在最後：實測模型對不上時會挑第一項，不能讓「對不上」變成「對自己下手」
+    order = [c for c in cands["targets"] if c["id"] != "self"] + [c for c in cands["targets"] if c["id"] == "self"]
+    out = {f"T{i}": c["id"] for i, c in enumerate(order, 1)}
     out.update({f"M{i}": m["id"] for i, m in enumerate(cands["means"], 1)})
     return out
 
@@ -282,8 +286,9 @@ def llm_prompt(text: str, cands: dict) -> tuple[str, str, dict]:
               "玩家可能用自己的說法稱呼清單裡的東西，依意思對應到最接近的那一項。"
               "你只負責理解玩家想做什麼，事情的結果由遊戲世界決定。")
     code = codes(cands)
-    tl = [f"{k}　{c['label']}" for k, c in zip((k for k in code if k.startswith("T")), cands["targets"])]
-    ml = [f"{k}　{m['label']}" for k, m in zip((k for k in code if k.startswith("M")), cands["means"])]
+    label = {c["id"]: c["label"] for c in cands["targets"] + cands["means"]}
+    tl = [f"{k}　{label[v]}" for k, v in code.items() if k.startswith("T")]
+    ml = [f"{k}　{label[v]}" for k, v in code.items() if k.startswith("M")]
     user = "【對象】\n" + "\n".join(tl) + "\n【能力與物品】\n" + ("\n".join(ml) or "（無）") + f"\n【玩家說】{text}"
     return system, user, schema_for(cands)
 
@@ -311,6 +316,8 @@ def validate_llm_intent(raw, cands: dict, text: str) -> dict | None:
     means, ok_m = pick(raw.get("means"), mids, "M")
     if not (ok_t and ok_m):
         return None
+    if target == "self" and not any(x in text for x in SELF_WORDS):
+        target = None   # 玩家沒提到自己，LLM 卻挑了「你自己」：多半是對不上時的預設值，不當真（改問玩家）
     return {"verb": raw["verb"], "target": target, "means": means,
             "modality": raw.get("modality") if raw.get("modality") in MODALITIES else None,
             "purpose": raw.get("purpose") if raw.get("purpose") in PURPOSES else None,
@@ -327,6 +334,8 @@ def parse(w, text: str, llm=None) -> tuple[dict | None, list[dict]]:
         return it, opts
     try:
         got = validate_llm_intent(llm(*llm_prompt(text, cands)), cands, (text or "")[:200])
+        if got and got["target"] is None and got["verb"] in NEEDS_TARGET:
+            return None, clarify(w, got, cands)   # 懂了想做什麼，但對象對不上：給選項，不猜
         if got:
             return got, []
     except Exception:

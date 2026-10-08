@@ -199,8 +199,8 @@ class ParserTests(unittest.TestCase):
         system, user, schema = intent.llm_prompt("隨便做點什麼", cands)
         props = schema["properties"]
         code = intent.codes(cands)
-        self.assertEqual([code[k] for k in props["target"]["enum"] if k], [c["id"] for c in cands["targets"]])
-        self.assertEqual([code[k] for k in props["means"]["enum"] if k], [m["id"] for m in cands["means"]])
+        self.assertEqual(sorted(code[k] for k in props["target"]["enum"] if k), sorted(c["id"] for c in cands["targets"]))
+        self.assertEqual(sorted(code[k] for k in props["means"]["enum"] if k), sorted(m["id"] for m in cands["means"]))
         self.assertEqual(props["modality"]["enum"], intent.MODALITIES + [None])
         self.assertEqual(props["purpose"]["enum"], intent.PURPOSES + [None])
         for k in code:
@@ -209,7 +209,7 @@ class ParserTests(unittest.TestCase):
         # 每個代號都對回這次的候選；所以 LLM 能選到的一定是伺服器列出的東西
         for k, real in code.items():
             field = "target" if k.startswith("T") else "means"
-            got = intent.validate_llm_intent({"verb": "examine", field: k}, cands, "x")
+            got = intent.validate_llm_intent({"verb": "examine", field: k}, cands, "看看我自己" if real == "self" else "x")
             self.assertEqual(got[field], real)
 
     def test_an_id_must_be_copied_exactly(self):
@@ -236,6 +236,22 @@ class ParserTests(unittest.TestCase):
         ids = {c["id"] for c in intent.candidates(w)["targets"]}
         self.assertTrue(it is None or it["target"] in ids | {None})
         self.assertTrue(it or opts is not None)
+
+    def test_an_unmatched_target_is_asked_not_guessed(self):
+        """實測：玩家的叫法對不上清單時，模型會挑第一項。「你自己」排在最後，而且沒提到自己就不收「自己」，改給選項。"""
+        w, tid = staged()
+        cands = intent.candidates(w)
+        code = intent.codes(cands)
+        tcodes = [k for k in code if k.startswith("T")]
+        self.assertNotEqual(code[tcodes[0]], "self")
+        self.assertEqual(code[tcodes[-1]], "self")
+        self_code = next(k for k, v in code.items() if v == "self")
+        it, opts = intent.parse(w, "利用超音波碎石術破壞金丹",
+                                llm=lambda *a: {"verb": "apply", "target": self_code, "means": None, "modality": "vibration"})
+        self.assertIsNone(it, "not executed on the player")
+        self.assertTrue(opts and all(o["target"] != "self" and o["verb"] == "apply" for o in opts))
+        it, _ = intent.parse(w, "我想用震波按摩我自己", llm=lambda *a: {"verb": "apply", "target": self_code, "modality": "vibration"})
+        self.assertEqual(it and it["target"], "self", "when the player does mean themselves, it stands")
 
     def test_plain_inputs_the_rules_understand_do_not_call_the_llm(self):
         w, _ = staged()
