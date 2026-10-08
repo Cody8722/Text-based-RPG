@@ -72,7 +72,8 @@ class SceneContinuityTests(unittest.TestCase):
         self.assertTrue(ctx["env_changed"] and ctx["shift"])
         system, user = Narrator.prompts(ctx)
         self.assertIn(ctx["shift"], system)
-        self.assertIn("【場景】", user)
+        self.assertIn("【此刻】", user)
+        self.assertNotIn(LOCATIONS[ctx["place"]]["name"], user.split("【本段已發生的事】")[0], "no place name to re-establish")
         tpl = ctx["template"]
         self.assertIsNotNone(check(allowed_time_word(ctx) + "裡，" + tpl, ctx)[0])
         wrong = next(x for g, ws in TIME_WORDS.items() if g not in TIME_ALLOWED[ctx["period"]] for x in ws if x not in tpl)
@@ -105,6 +106,10 @@ class SceneContinuityTests(unittest.TestCase):
         self.assertEqual(ctx["mode"], "return")
         self.assertNotIn(LOCATIONS[start]["day"], ctx["template"])
         self.assertEqual(check(ctx["template"] + LOCATIONS[start]["day"], ctx)[1], "scene_reintro")
+        # 換個說法講「到了」是可以的（片段本身就是抵達）
+        name = LOCATIONS[start]["name"]
+        again = ctx["template"].replace(f"你來到{name}", f"你又踏入{name}") + "你放慢了腳步，左右看了看。"
+        self.assertIsNotNone(check(again, ctx)[0], check(again, ctx)[1])
 
     def test_the_opening_describes_each_thing_once(self):
         w, beats = opening()

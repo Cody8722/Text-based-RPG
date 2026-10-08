@@ -253,7 +253,9 @@ def check(output, ctx: dict) -> tuple[str | None, str | None]:
     if "place" in ctx and not ctx.get("arrived"):
         here = LOCATIONS[ctx["place"]]["name"]
         again = ARRIVAL_WORDS + [v + here for v in ("來到", "走進", "踏進", "踏入", "走到")]
-        if new(again) or scene_overlap(said, ctx["place"]) > 0.2 or len(fresh_grams(said, template, scene_grams(ctx["place"]))) >= 2:
+        # 「剛回到」的回合，片段本身就是抵達（你來到某處），換個說法講抵達不算重新介紹；照樣不能重寫地點描寫
+        arrival_again = ctx.get("mode") != "return" and new(again)
+        if arrival_again or scene_overlap(said, ctx["place"]) > 0.2 or len(fresh_grams(said, template, scene_grams(ctx["place"]))) >= 2:
             return None, "scene_reintro"
         # 場景只在第一次抵達時建立。之後同一個地方的回合：不再點名這個地方；
         # 時辰、天氣、光線只有在真的變了的回合才能寫（而且上面的時間／天氣檢查照樣守住寫得對不對）。
@@ -409,10 +411,14 @@ class Narrator:
         if mode != "establish" and ctx.get("shift"):
             focus += f"這段時間裡{ctx['shift']}，可以用一句話帶到這個變化。"
         system = base + focus + "篇幅貼近指定的字數。全文使用繁體中文，只包含文字與標點符號。輸出一個 JSON 物件，欄位 narrative 放這段敘事。"
-        if mode == "establish" or ctx.get("env_changed", True):
+        # 只有建立場景的回合才給地名與完整情境；之後的回合不給地名（實測：給了，模型就會再點名、再鋪一次景），
+        # 環境真的變了才給此刻的時辰天氣
+        if mode == "establish":
             user = f"【場景】{ctx['scene']}\n"
+        elif ctx.get("env_changed", True):
+            user = f"【此刻】{PERIODS[ctx['period']]}，{ctx['weather']}\n"
         else:
-            user = f"【地點】{LOCATIONS[ctx['place']]['name']}（玩家已經在這裡）\n" if ctx.get("place") in LOCATIONS else ""
+            user = ""
         user += f"【這一段在場的人】{ctx['cast']}\n"
         if ctx.get("mentioned"):
             user += f"【只在話裡提到、此刻不在場的人】{ctx['mentioned']}\n"
