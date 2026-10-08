@@ -35,6 +35,9 @@ WEATHER_CLASH = {
     "雨": ["陽光普照", "萬里無雲", "艷陽", "烈日", "晴空"],
     "陰": ["陽光普照", "萬里無雲", "艷陽", "烈日", "晴空"],
 }
+# 描寫「這一刻的環境」的詞（時辰、光線、天氣）：環境沒變的同地點回合，說書人不該再寫
+ENVIRONMENT = sorted({x for ws in TIME_CLASH.values() for x in ws} | {x for ws in WEATHER_CLASH.values() for x in ws}
+                     | {"晨霧", "午後", "上午", "傍晚"})
 COMPANIONS = ["你們幾", "你們一行", "一行人", "同伴", "同行的"]
 PRESENCE = ["走到", "走過來", "走了過來", "走進", "湊過來", "站在", "坐在", "迎上", "拍了拍", "遞給"]
 EVENTS = ["過世", "斷氣", "被抓", "抓進", "偷走", "打傷", "起火", "失火", "拔刀", "鮮血", "昏倒", "搶走"]
@@ -42,7 +45,7 @@ SIMPLIFIED = set("这说们时来为会对过还没发现开关问应见门马�
 PLACES = sorted({p["name"] for p in LOCATIONS.values()}, key=len, reverse=True)
 
 CATEGORIES = ["format", "length", "dialogue", "digits", "cast_missing", "cast_extra", "absent_on_stage", "companions", "time", "weather",
-              "scene_reintro", "invented_event", "persona_leak", "secret_leak", "simplified"]
+              "scene_reintro", "scene_repaint", "invented_event", "persona_leak", "secret_leak", "simplified"]
 
 
 def _named(text: str, name: str) -> bool:
@@ -120,6 +123,11 @@ def audit(text, ctx: dict, w) -> list[str]:
         out.append("weather")
     if not ctx["arrived"] and ("你來到" in said and "你來到" not in tpl or scene_overlap(said, ctx["place"]) > 0.3):
         out.append("scene_reintro")
+    mode = ctx.get("mode")
+    if mode in ("continue", "return") and (
+            not ctx.get("env_changed", True) and fresh(ENVIRONMENT)
+            or mode == "continue" and LOCATIONS[ctx["place"]]["name"] in said and LOCATIONS[ctx["place"]]["name"] not in tpl):
+        out.append("scene_repaint")      # 一直待在同一個地方，卻又重新畫了一次場景
     if fresh(EVENTS):
         out.append("invented_event")
     tpl6 = grams(tpl, 6)

@@ -98,15 +98,21 @@ def violations_for(ctx, w):
         out["absent_on_stage"] = tpl + f"{ctx['absent'][0]}走了過來，站在你身邊。"
     if not ctx["arrived"]:
         out["scene_reintro"] = tpl + LOCATIONS[ctx["place"]]["day"]
+    if ctx["mode"] in ("continue", "return") and not ctx["env_changed"]:
+        word = next(x for x in contract.ENVIRONMENT if x not in tpl and x not in contract.TIME_CLASH[ctx["period"]]
+                    and x not in contract.WEATHER_CLASH.get(ctx["weather"], []))
+        out["scene_repaint"] = tpl + word + "裡，四下靜悄悄的。"   # 時辰寫對了，但環境沒變卻又畫了一次
     return out
 
 
 class ContractTests(unittest.TestCase):
     def _cases(self):
         for name in ("arrive_then_stay", "absent_mentioned", "time_4", "crowded_tavern"):
+            told = None
             for w, aid, beats in _walk(scenarios.BY_NAME[name], 8):
-                ctx = Narrator.build_context(w, beats)
+                ctx = Narrator.build_context(w, beats, told)
                 if ctx:
+                    told = Narrator.environment(w)
                     yield name, aid, ctx, w
 
     def test_checker_catches_every_category(self):
@@ -140,6 +146,7 @@ class ContractTests(unittest.TestCase):
             self.assertLessEqual(set(words), set(N.WEATHER_CONTRADICTS[wx]), wx)
         self.assertLessEqual(set(contract.COMPANIONS), set(N.COMPANION_WORDS))
         self.assertLessEqual(set(contract.EVENTS), set(N.EVENT_WORDS))
+        self.assertLessEqual(set(contract.ENVIRONMENT), set(N.ENV_WORDS))
         self.assertLessEqual(set(contract.PRESENCE), set(N.PRESENCE_WORDS))
 
     def test_free_retelling_is_not_a_violation(self):

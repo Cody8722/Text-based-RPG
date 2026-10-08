@@ -336,9 +336,9 @@ def do_move(w: World, dest: str):
     last = visits.get(dest)
     if last is None or w.clock - last[0] > 12 or last[1] != night:
         desc = LOCATIONS[dest]["night" if night else "day"]
-        sim.beat(w, "arrive", f"你來到{LOCATIONS[dest]['name']}。{desc}")
+        sim.beat(w, "arrive", f"你來到{LOCATIONS[dest]['name']}。{desc}", scene="establish")
     else:
-        sim.beat(w, "arrive", f"你來到{LOCATIONS[dest]['name']}。")
+        sim.beat(w, "arrive", f"你來到{LOCATIONS[dest]['name']}。", scene="return")
     visits[dest] = [w.clock, night]
 
 

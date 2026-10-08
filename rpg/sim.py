@@ -19,8 +19,9 @@ MISCHIEF_CHANCE = 3   # %，每天
 
 
 # ---------------- 對玩家的輸出片段 ----------------
-def beat(w: World, kind: str, text: str, fid: str | None = None):
-    w.feed.append({"kind": kind, "text": text, "fid": fid})
+def beat(w: World, kind: str, text: str, fid: str | None = None, **extra):
+    """extra：給說書人的結構資訊（例如抵達片段的 scene="establish"／"return"），不影響世界。"""
+    w.feed.append({"kind": kind, "text": text, "fid": fid, **extra})
 
 
 def player_here(w: World, place: str) -> bool:

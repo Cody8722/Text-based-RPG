@@ -93,9 +93,11 @@
   function beatEl(b) {
     const p = el("p", `beat k-${b.kind}`);
     if (b.kind === "arrive" && b.text.startsWith("你來到")) {
+      // 粗體只包住地名那句、不含句號：粗體以標點結尾又緊接中文時，複製成 Markdown 會被迫把下一個字
+      // 轉成 &#x....; 實體（CommonMark 的強調規則），所以句號留在粗體外面
       const i = b.text.indexOf("。");
-      const place = el("span", "place", b.text.slice(0, i + 1));
-      p.append(place, document.createTextNode(b.text.slice(i + 1)));
+      const place = el("span", "place", b.text.slice(0, i));
+      p.append(place, document.createTextNode(b.text.slice(i)));
       return p;
     }
     if (TAGS[b.kind]) p.append(el("span", "tag", TAGS[b.kind]));

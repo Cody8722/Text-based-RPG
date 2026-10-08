@@ -28,15 +28,18 @@ def run_scenario(sc: scenarios.Scenario, narrator: Narrator | None, narrated_tur
     target = narrated_turns if narrated_turns is not None else (scenarios.long_turns() if sc.policy else None)
     turns, hash_mismatch, shadow_mismatch = [], 0, 0
     started = time.monotonic()
+    told = None   # 跟遊戲一樣：上一段說書時的環境
     for step, ((w, aid, beats), (sw, said, _)) in enumerate(zip(main, shadow)):
         if aid != said:
             shadow_mismatch += 1
-        ctx = Narrator.build_context(w, beats)
+        ctx = Narrator.build_context(w, beats, told)
+        if ctx:
+            told = Narrator.environment(w)
         rew = [b for b in beats if b["kind"] in REWRITE_KINDS]
         t = {"step": step, "action": aid, "kind": "llm" if ctx else ("dialogue_only" if rew else "nothing"),
              "period": w.period, "weather": w.weather, "place": w.player["location"]}
         if ctx:
-            t.update(template=ctx["template"], arrived=ctx["arrived"], on_stage=ctx["on_stage"], absent=ctx["absent"],
+            t.update(template=ctx["template"], arrived=ctx["arrived"], mode=ctx["mode"], env_changed=ctx["env_changed"], on_stage=ctx["on_stage"], absent=ctx["absent"],
                      prompt="\n".join(Narrator.prompts(ctx)))
         if ctx and narrator:
             before = w.state_hash()
@@ -69,14 +72,17 @@ def rescore(results: list[dict]) -> list[dict]:
         recorded = {t["step"]: t for t in r["turns"]}
         last = max(recorded) if recorded else -1
         turns = []
+        told = None
         for step, (w, aid, beats) in enumerate(scenarios.iterate(sc)):
             if step > last:
                 break
             t = dict(recorded[step])
             if aid != t["action"]:
                 raise RuntimeError(f"{r['scenario']} step {step}: replay diverged ({aid} != {t['action']})")
+            ctx = Narrator.build_context(w, beats, told)
+            if ctx:
+                told = Narrator.environment(w)
             if "source" in t and t["reason"] != "error":
-                ctx = Narrator.build_context(w, beats)
                 text, reason = check(t["raw"], ctx)
                 t.update(source="llm" if text else "template", reason=reason, shown=text or ctx["template"],
                          raw_violations=contract.audit(t["raw"], ctx, w),
@@ -122,6 +128,7 @@ def summarize(results: list[dict], model: str = "") -> dict:
             s["rejected_but_clean"][t["reason"]] = s["rejected_but_clean"].get(t["reason"], 0) + 1
     non_arrival = [t for t in calls if not t["arrived"]]
     s["scene_reintro_raw"] = [sum(1 for t in non_arrival if "scene_reintro" in t["raw_violations"]), len(non_arrival)]
+    s["scene_repaint_raw"] = [sum(1 for t in non_arrival if "scene_repaint" in t["raw_violations"]), len(non_arrival)]
     lat = [t["latency"] for t in calls if t.get("latency") is not None]
     s["latency"] = {"mean": round(statistics.mean(lat), 1), "p50": round(statistics.median(lat), 1),
                     "p95": round(sorted(lat)[int(len(lat) * 0.95) - 1 if len(lat) > 1 else 0], 1),
@@ -163,6 +170,9 @@ def format_report(s: dict) -> str:
     lines.append(f"Rejected though the checker saw nothing (validator possibly too strict): {s['rejected_but_clean'] or 0}")
     a, b = s["scene_reintro_raw"]
     lines.append(f"Scene re-introduced on non-arrival turns (raw): {_pct(a, b)}")
+    if "scene_repaint_raw" in s:
+        a, b = s["scene_repaint_raw"]
+        lines.append(f"Scenery/time repainted while staying put (raw): {_pct(a, b)}")
     if "long_play_fallback_halves" in s:
         h1, h2 = s["long_play_fallback_halves"]
         lines.append(f"Long play: {s['long_play_calls']} calls, fallback first half {h1:.0%} → second half {h2:.0%}")

@@ -10,6 +10,7 @@ import threading
 from . import config
 from . import player as player_mod
 from . import sim, view
+from .content.locations import NIGHT_PERIODS
 from .narrator import REWRITE_KINDS, Narrator
 from .world import SAVE_VERSION, World, new_world
 
@@ -17,13 +18,16 @@ from .world import SAVE_VERSION, World, new_world
 
 def intro_beats(w: World) -> list[dict]:
     bg = player_mod.BACKGROUNDS[w.player["background"]]
+    # 開場就是第一次抵達鎮口：記下來，之後短時間內回到這裡不再整段描寫（跟 do_move 同一套規則）
+    w.player.setdefault("visits", {})["gate"] = [w.clock, w.period in NIGHT_PERIODS]
     return [
         {"kind": "intro", "text": "青石鎮"},
         {"kind": "intro", "text": f"你是一個{bg['name']}。{bg['desc']}"},
         *self_intro(w),
         {"kind": "intro", "text": f"官道走到盡頭，斑駁的城門出現在眼前。你摸了摸錢袋，裡頭只剩{w.player['money']}文。"
                                   "沒有人在等你，也沒有人知道你為什麼來——這個鎮子有它自己的日子要過。"},
-        {"kind": "arrive", "text": "你來到鎮口。" + "斑駁的城門矗立在鎮子邊界，門邊的木牌上貼著幾張告示，有新有舊。"},
+        # 上一句已經寫了城門，這裡只補還沒說過的東西（不把同一個景再介紹一次）
+        {"kind": "arrive", "text": "你來到鎮口。門邊的木牌上貼著幾張告示，有新有舊。", "scene": "establish"},
     ] + gate_hook(w)
 
 
@@ -69,6 +73,7 @@ class Game:
         self.lock = threading.RLock()
         self.world: World | None = None
         self.offered: list[str] = []
+        self.told_env: tuple | None = None   # 上一段說書時的環境（只影響說書人措辭，不存檔）
 
     @property
     def save_path(self) -> str:
@@ -94,6 +99,7 @@ class Game:
             if background not in player_mod.BACKGROUNDS:
                 raise player_mod.ActionError("沒有這種出身")
             self.world = new_world(seed, background, skills, talent, talent_llm=self.narrator.talent_llm())
+            self.told_env = None
             beats = intro_beats(self.world)
             self.save()
             return self.response(beats)
@@ -104,6 +110,7 @@ class Game:
                 self.world = self.load()
             if self.world is None:
                 raise player_mod.ActionError("沒有可以繼續的存檔")
+            self.told_env = None   # 隔了一陣子才回來：下一段可以重新交代環境
             beats = [{"kind": "intro", "text": "你回到了青石鎮。"}]
             return self.response(beats)
 
@@ -123,7 +130,9 @@ class Game:
 
     def response(self, beats: list[dict]) -> dict:
         w = self.world
-        job = self.narrator.submit(w, beats) if beats else None
+        job = self.narrator.submit(w, beats, self.told_env) if beats else None
+        if job:   # 這一段有說書：之後的段落拿它來比「環境變了沒」（沒說書的回合，變化留給下一段說）
+            self.told_env = Narrator.environment(w)
         return {"view": view.build(w, beats), "narration": job, "rewrite_kinds": sorted(REWRITE_KINDS)}
 
     # ---------- 存檔 ----------
@@ -133,7 +142,7 @@ class Game:
         os.makedirs(self.save_dir, exist_ok=True)
         tmp = self.save_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self.world.to_dict(), f, ensure_ascii=False)
+            json.dump(self.world.to_dict(), f, ensure_ascii=False, indent=2)   # 存檔本身就是人看得懂的格式
         os.replace(tmp, self.save_path)
 
     def load(self) -> World | None:

@@ -78,6 +78,14 @@ const { chromium } = require("playwright");
     if (await page.locator(`#tab-${tab}`).isHidden()) await fail(`tab ${tab} did not open`);
   }
   const journal = await page.locator("#tab-journal .jentry").count();
+  // 畫面上的文字不能出現 HTML 實體原文（&#x6591; 之類）；粗體地名不以標點結尾（複製成 Markdown 時才不會被轉成實體）
+  {
+    const story = await page.locator("#story").innerText();
+    if (/&#x?[0-9a-f]+;|&[a-z]+;/i.test(story)) await fail("story shows a raw HTML entity");
+    const places = await page.locator(".k-arrive .place").allInnerTexts();
+    if (!places.length) await fail("no arrival line rendered");
+    if (places.some((t) => /[。，！？、；：]$/.test(t))) await fail("bold place label ends with punctuation");
+  }
   // 介面上不能出現數字化的好感度或內部欄位
   const html = await page.content();
   for (const bad of ["opinion", "traits", "truth", "undefined", "NaN", "[object Object]"]) {

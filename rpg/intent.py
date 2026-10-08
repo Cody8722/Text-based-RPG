@@ -11,7 +11,8 @@
 
 理解的方式：
 - 詞表解析（parse_rules）：不需要 LLM。只認得意圖的形狀，認不出時回傳候選選項讓玩家點選，而不是猜。
-- LLM 解析（parse_llm，可選）：讓 LLM 從候選清單裡挑；輸出過白名單驗證（多出來的欄位、包括任何「結果」一律丟掉，
+- 先用詞表；詞表能可靠確定的（reliable）就不呼叫 LLM。
+- LLM 解析（可選）：讓 LLM 從候選清單裡挑（schema 依這次的候選動態產生 enum）；輸出過白名單驗證（多出來的欄位、包括任何「結果」一律丟掉，
   target／means 必須是清單裡的 id）。驗證不過就退回詞表解析。這是 CLAUDE.md「模糊比對排除」原則的延伸：
   LLM 只能在伺服器給的精確選項之間選，不能發明對象。
 """
@@ -46,6 +47,8 @@ HELP_WORDS = ["救", "治", "幫", "病因", "緩解", "減輕", "好起來"]
 HARM_WORDS = ["殺", "傷", "打死", "弄死", "教訓", "報仇"]
 PERSON_PRONOUNS = ["這個人", "那個人", "對方", "病人", "他", "她"]
 THING_PRONOUNS = ["那個東西", "這個東西", "那東西", "這東西", "那顆", "這顆", "那塊", "這塊", "它", "異物", "硬塊", "團塊"]
+NEEDS_TARGET = ("examine", "apply", "tap", "treat", "strike", "give", "take", "talk")
+SELF_WORDS = ["我自己", "自己", "自身", "我身上", "我的身體"]
 INSIDE_WORDS = ["體內", "身體裡", "肚子", "肚裡", "腹中", "裡面", "身上"]
 
 
@@ -160,7 +163,7 @@ def parse_rules(w, text: str, cands: dict | None = None) -> tuple[dict | None, l
               "means": means["id"] if means else None, "purpose": purpose,
               "hypothesis": t if verb == "note" or any(x in t for x in NOTE_WORDS) else None, "text": t,
               "deep": any(x in t for x in INSIDE_WORDS)}
-    needs_target = intent["verb"] in ("examine", "apply", "tap", "treat", "strike", "give", "take", "talk")
+    needs_target = intent["verb"] in NEEDS_TARGET
     if verb and (target or not needs_target):
         return intent, []
     return None, clarify(w, intent, cands)
@@ -216,35 +219,105 @@ def clarify(w, partial: dict, cands: dict) -> list[dict]:
     return opts
 
 
+# ---------------------------------------------------------------- 詞表解析夠不夠可靠
+def verb_hits(text: str) -> set[str]:
+    """句子裡出現了哪幾類動詞。被更長的命中詞包住的短詞不算（「敲碎」裡的「敲」）。"""
+    hits = [(x, v) for v, ws in VERB_WORDS for x in ws if x in text]
+    return {v for x, v in hits if not any(x != y and x in y for y, _ in hits)}
+
+
+def reliable(text: str, it: dict | None) -> bool:
+    """詞表解析的結果可以直接用，不必再問 LLM：只認出一種動作，對象有著落（或這種動作不需要對象），
+    要「作用」在東西上時，用什麼方式也講明了。其餘（開放式的說法）才交給 LLM 理解。"""
+    if not it or it["verb"] == "other":
+        return False
+    if len(verb_hits(text)) > 1:
+        return False
+    if it["verb"] == "apply" and not (_first(text, MODALITY_CUES) or it.get("means")):
+        return False
+    return True
+
+
 # ---------------------------------------------------------------- LLM 解析（可選）
-INTENT_SCHEMA = {"type": "object", "properties": {
-    "verb": {"type": "string", "enum": VERBS}, "target": {"type": ["string", "null"]},
-    "modality": {"type": ["string", "null"]}, "means": {"type": ["string", "null"]},
-    "purpose": {"type": ["string", "null"]}}, "required": ["verb"]}
+VERB_MEANING = {
+    "examine": "看、摸、聽、診察，想弄清楚對象的狀況", "apply": "用某種方式作用在一個東西上（弄碎、加熱、割開……）",
+    "tap": "敲一敲、叩一叩，聽它的聲音", "treat": "替人醫治、減輕病痛", "strike": "動手打人",
+    "talk": "跟人說話", "give": "把東西給人", "take": "把東西拿走", "move": "去別的地方", "wait": "等待、休息",
+    "note": "只是說出自己的推測", "other": "以上都不像",
+}
 
 
-def llm_prompt(text: str, cands: dict) -> tuple[str, str]:
-    system = ("你是一個文字冒險遊戲的指令理解器。玩家用一句話描述想做的事，你把它對應到固定的欄位："
-              f"verb 只能是 {VERBS} 其中之一；target 只能是候選清單裡的 id 或 null；means 只能是能力／物品清單裡的 id 或 null；"
-              f"modality 只能是 {MODALITIES} 其中之一或 null；purpose 只能是 {PURPOSES} 其中之一或 null。"
-              "你只負責理解玩家想做什麼，事情的結果由遊戲世界決定。輸出一個 JSON 物件。")
-    lines = [f"- {c['id']}：{c['label']}" for c in cands["targets"]]
-    mlines = [f"- {m['id']}：{m['label']}" for m in cands["means"]]
-    user = "【候選對象】\n" + "\n".join(lines) + "\n【能力與物品】\n" + ("\n".join(mlines) or "（無）") + f"\n【玩家說】{text}"
-    return system, user
+def codes(cands: dict) -> dict:
+    """給 LLM 看的短代號 → 真正的候選 id。代號沒有冒號（實測模型會把「t:t7：石淋」截成 t7），
+    依候選順序固定產生；伺服器自己對回去，模型永遠碰不到真正的 id 格式。"""
+    # 「你自己」排在最後：實測模型對不上時會挑第一項，不能讓「對不上」變成「對自己下手」
+    order = [c for c in cands["targets"] if c["id"] != "self"] + [c for c in cands["targets"] if c["id"] == "self"]
+    out = {f"T{i}": c["id"] for i, c in enumerate(order, 1)}
+    out.update({f"M{i}": m["id"] for i, m in enumerate(cands["means"], 1)})
+    return out
+
+
+def schema_for(cands: dict) -> dict:
+    """這一次請求專用的 schema：target／means 只能是這次的代號，其他欄位只能是固定清單裡的值。
+    注意：實測 Ollama 0.31.1 + qwen3.5 不會依 format 的 schema 限制輸出（連必填欄位都不管），
+    所以真正的防線是提示（代號、一個欄位一個值）＋伺服器端白名單；schema 只是在支援的版本上多一層。"""
+    code = codes(cands)
+
+    def one_of(values):
+        return {"type": ["string", "null"], "enum": [*values, None]}
+    return {"type": "object", "properties": {
+        "verb": {"type": "string", "enum": VERBS},
+        "target": one_of(k for k in code if k.startswith("T")),
+        "means": one_of(k for k in code if k.startswith("M")),
+        "modality": one_of(MODALITIES),
+        "purpose": one_of(PURPOSES),
+    }, "required": ["verb", "target", "means", "modality", "purpose"]}
+
+
+def llm_prompt(text: str, cands: dict) -> tuple[str, str, dict]:
+    """回傳 (system, user, schema)。"""
+    verbs = "；".join(f"{v}＝{VERB_MEANING[v]}" for v in VERBS)
+    system = ("你是一個文字冒險遊戲的指令理解器，把玩家的一句話整理成一個 JSON 物件，欄位是 verb、target、means、modality、purpose，"
+              "每個欄位只放一個值。"
+              "target 是對象清單裡的一個代號（像 T2 這樣一個英文字母加數字），means 是能力與物品清單裡的一個代號（像 M1）；"
+              "清單裡沒有合適的就填 null。"
+              f"verb 的意思：{verbs}。"
+              f"modality 是作用的方式，從 {MODALITIES} 選一個或填 null；purpose 從 {PURPOSES} 選一個或填 null。"
+              "玩家可能用自己的說法稱呼清單裡的東西，依意思對應到最接近的那一項。"
+              "你只負責理解玩家想做什麼，事情的結果由遊戲世界決定。")
+    code = codes(cands)
+    label = {c["id"]: c["label"] for c in cands["targets"] + cands["means"]}
+    tl = [f"{k}　{label[v]}" for k, v in code.items() if k.startswith("T")]
+    ml = [f"{k}　{label[v]}" for k, v in code.items() if k.startswith("M")]
+    user = "【對象】\n" + "\n".join(tl) + "\n【能力與物品】\n" + ("\n".join(ml) or "（無）") + f"\n【玩家說】{text}"
+    return system, user, schema_for(cands)
 
 
 def validate_llm_intent(raw, cands: dict, text: str) -> dict | None:
-    if not isinstance(raw, dict) or raw.get("verb") not in VERBS:
+    """白名單：target／means 必須一字不差地是這次的代號（或原本的候選 id）；「t7」這種不完整的寫法不收、不補全。
+    欄位只能是字串或 null；其餘欄位（包括任何「結果」）一律丟掉。"""
+    if not isinstance(raw, dict) or not isinstance(raw.get("verb"), str) or raw["verb"] not in VERBS:
         return None
+    if any(raw.get(k) is not None and not isinstance(raw.get(k), str) for k in ("target", "means", "modality", "purpose")):
+        return None   # 欄位只能是字串或 null（實測模型偶爾會回陣列）：不收，不猜
+    code = codes(cands)
     tids = {c["id"] for c in cands["targets"]}
     mids = {m["id"] for m in cands["means"]}
-    target = raw.get("target")
-    means = raw.get("means")
-    if target is not None and target not in tids:
+
+    def pick(v, ids, prefix):
+        if v is None:
+            return None, True
+        if v in ids:
+            return v, True
+        if v.startswith(prefix) and v in code:
+            return code[v], True
+        return None, False
+    target, ok_t = pick(raw.get("target"), tids, "T")
+    means, ok_m = pick(raw.get("means"), mids, "M")
+    if not (ok_t and ok_m):
         return None
-    if means is not None and means not in mids:
-        return None
+    if target == "self" and not any(x in text for x in SELF_WORDS):
+        target = None   # 玩家沒提到自己，LLM 卻挑了「你自己」：多半是對不上時的預設值，不當真（改問玩家）
     return {"verb": raw["verb"], "target": target, "means": means,
             "modality": raw.get("modality") if raw.get("modality") in MODALITIES else None,
             "purpose": raw.get("purpose") if raw.get("purpose") in PURPOSES else None,
@@ -253,16 +326,21 @@ def validate_llm_intent(raw, cands: dict, text: str) -> dict | None:
 
 
 def parse(w, text: str, llm=None) -> tuple[dict | None, list[dict]]:
-    """llm：可選，(system, user) -> dict。LLM 結果過不了驗證就用詞表解析。"""
+    """llm：可選，(system, user, schema) -> dict。
+    先用詞表解析；詞表能可靠確定的就直接用（不呼叫 LLM）。開放式的說法才問 LLM，過不了白名單就回到詞表的結果／澄清選項。"""
     cands = candidates(w)
-    if llm:
-        try:
-            got = validate_llm_intent(llm(*llm_prompt(text, cands)), cands, (text or "")[:200])
-            if got:
-                return got, []
-        except Exception:
-            pass
-    return parse_rules(w, text, cands)
+    it, opts = parse_rules(w, text, cands)
+    if not llm or reliable((text or "").strip()[:200], it):
+        return it, opts
+    try:
+        got = validate_llm_intent(llm(*llm_prompt(text, cands)), cands, (text or "")[:200])
+        if got and got["target"] is None and got["verb"] in NEEDS_TARGET:
+            return None, clarify(w, got, cands)   # 懂了想做什麼，但對象對不上：給選項，不猜
+        if got:
+            return got, []
+    except Exception:
+        pass
+    return it, opts
 
 
 def same_concept(a: str | None, b: str | None) -> bool:
