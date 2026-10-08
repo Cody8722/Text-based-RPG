@@ -138,7 +138,35 @@ docs/reviews/     舊 MVP 的審查文件
 ```bash
 python -m unittest discover -s tests          # 新引擎（約 40 秒；有 node+playwright 會多跑瀏覽器測試）
 python -m unittest discover -s legacy/tests   # 舊 MVP（仍應全綠，含 3 個刻意的 expected failure）
+
+# 選用：裝了 pytest 也可以
+pytest                                        # = 上面的快速測試，不需要 Ollama
 ```
+
+### 真模型整合測試（`tests_llm/`，跟快速測試分開）
+
+需要本機 Ollama 與 `RPG_MODEL`（預設 `qwen3.5:9b`）。連不上或沒有模型時整組 SKIP，印出 `LLM UNAVAILABLE` 與原因——那是環境狀況，不是遊戲錯誤。
+
+```bash
+python -m tests_llm                    # 全部情境＋連續遊玩 60 個說書回合
+python -m tests_llm --long-turns 100   # 連續遊玩跑久一點
+python -m tests_llm --only time absent # 只跑名稱含這些字的測試
+python -m tests_llm --require          # Ollama 不可用時結束碼 3（給要強制跑的場合）
+python -m tests_llm --rescore tests_llm/reports/latest.json   # 不呼叫模型：用現在的驗證器重判上次記錄的模型原文（調驗證器用，幾秒鐘）
+pytest -m llm -s                       # 同一套，用 pytest 跑
+```
+
+- 不要求模型說出特定句子；檢查的是**契約**：顯示給玩家的文字不能多出鎮民、不能把只被提到的人寫成在場、不能改台詞、
+  不能改時辰天氣、不能多出同行者或事件、剛介紹過的地方不能再介紹一遍、不能講出人物設定或玩家不知道的祕密、長度、繁體中文；
+  說書人永遠不改世界狀態（每回合比對 hash，並跟一份沒有說書人的影子世界逐回合比對）。
+- 情境是確定的（`tests_llm/scenarios.py`：剛抵達後停留、純對話、談到不在場的人、多人在場、有私密設定、六個時辰×天氣、固定 seed 連續遊玩）。
+- 跑完印出統計（接受率、退回率與原因、模型原始輸出各類越界次數、有沒有漏到玩家眼前、延遲、連續遊玩前後半段退回率），
+  逐回合完整紀錄（prompt、模型原文、顯示文字、判定）寫到 `tests_llm/reports/latest.json`。調提示或驗證器時先看這份。
+- 報告裡「Rejected though the checker saw nothing」是驗證器可能太嚴的地方；「Reached the player」必須是 0，不是 0 就是驗證器的缺口。
+  改驗證器之後先 `--rescore` 看兩個數字怎麼變，再決定要不要重跑真模型。
+- 環境變數：`RPG_OLLAMA_URL`、`RPG_MODEL`、`RPG_LLM_TIMEOUT`（預設 180 秒）、`RPG_LLM_LONG_TURNS`、`RPG_LLM_MIN_ACCEPT`（接受率下限，預設只要求至少一次被採用）。
+- 契約檢查器（`tests_llm/contract.py`）刻意跟 production 驗證器分開寫；`tests/test_llm_harness.py` 會確認兩邊對得上，
+  也確認測試架構本身（情境確定、沒有模型時正確 SKIP、假模型故意越界時不會漏到玩家眼前）。
 
 測試分組：
 
@@ -151,6 +179,7 @@ python -m unittest discover -s legacy/tests   # 舊 MVP（仍應全綠，含 3 �
 | `test_view_hiding.py` | 前端資料不含內部欄位、不含玩家不知道的祕密、選單不洩漏誰被關 |
 | `test_narrator.py` | LLM 亂寫／捏造數字／多拉人／逾時／連不上 → 退回模板；敘事永遠不改 state；prompt 不含祕密；`think:false`、`num_ctx:8192` 有帶 |
 | `test_dialogue.py` | 同一個故事清晨只播一次、見聞錄一件事一條、傳話一次講完整件事、追問會換說法然後對方不聊了、家常話不重複、NPC 只提一次你做的事、當事人不轉述自己做的事、偷竊被逮後被趕出去並被盯上、選句子不動到世界的亂數 |
+| `test_llm_harness.py` | 真模型整合測試的架構：情境確定且真的涵蓋宣稱的條件、契約檢查器抓得到每一類越界且不誤判模板、production 驗證器擋得住契約檢查器會抓的每一類、假模型故意越界時不會漏給玩家、沒有 Ollama 時明確 SKIP |
 | `test_server.py` | 真 HTTP：完整流程、壞請求、除錯端點預設關閉、靜態檔不能穿越目錄 |
 | `test_ui_e2e.py` + `ui_e2e.js` | 真瀏覽器：開局、選出身、移動、交談、快捷鍵、側欄、手機抽屜、說書人敘事出現且不卡住、頁面沒有 JS 錯誤 |
 

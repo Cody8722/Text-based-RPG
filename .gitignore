@@ -10,3 +10,6 @@ venv/
 
 # 遊戲存檔（本機、個人）
 saves/
+
+# 真模型測試的逐回合紀錄與報告（python -m tests_llm 產生）
+tests_llm/reports/
