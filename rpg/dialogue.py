@@ -72,7 +72,7 @@ def say(w, nid, text):
 
 
 def act(aid, label, group, hint=None):
-    from .player import act as _act
+    from .player import act_ as _act
 
     return _act(aid, label, group, hint)
 
@@ -323,7 +323,7 @@ def h_chat(w, nid, _):
     if line:
         say(w, nid, f"{w.name(nid)}：{line}")
     elif n.get("voice_key") in CHATTER and w.opinion(nid, "player") > -25:
-        chatter = speech.pick(w, nid, CHATTER[n["voice_key"]], optional=True, keep=30)
+        chatter = speech.pick(w, f"{nid}:chatter", CHATTER[n["voice_key"]], optional=True, keep=30)
         if chatter:   # 說過的家常話短期內不再說；說完了就只寫聊天的場景
             say(w, nid, f"{w.name(nid)}：{chatter}")
     sim.beat(w, "action", chat_scene(w, nid))

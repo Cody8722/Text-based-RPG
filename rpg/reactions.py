@@ -27,12 +27,55 @@ def _cares(w, who, target):
     return max(0, w.opinion(who, target))
 
 
+HARM_EFFECTS = {"pain", "collapse", "power_loss", "thing_cracked", "thing_shattered", "bleed"}
+CURIOUS_DOMAINS = {"acoustics", "cultivation", "neigong", "physics", "mystic"}
+
+
+def on_learn_act(w, who: str, fid: str, src: str):
+    """自由行動造成的事：每個人只依自己的版本（view）反應——不知道是誰做的，就只能記著、去報官、去打聽。"""
+    from . import mind
+
+    n = w.npcs[who]
+    f = w.facts[fid]
+    v = n["knows"][fid].get("view") or {}
+    culprit, victim = v.get("actor"), v.get("host")
+    effects = set(v.get("effects", []))
+    harmful = bool(effects & HARM_EFFECTS) and victim is not None
+    if harmful:
+        care = _cares(w, who, victim)
+        if culprit and culprit != who:
+            w.adjust_opinion(who, culprit, -(6 + care // 4))
+            if care >= 60:
+                n["blame"][culprit] = min(200, n["blame"].get(culprit, 0) + (45 if victim == who else 30))
+                n.setdefault("blame_src", {})[culprit] = fid
+        elif care >= 60:
+            n.setdefault("mysteries", [])     # 有人傷了自己在乎的人，卻不知道是誰：一個懸著的疑問
+            if fid not in n["mysteries"]:
+                n["mysteries"].append(fid)
+        if victim == who:
+            w.stress(who, 15)
+        if who != "zhao" and (src == "witness" or victim == who or care >= 80):
+            n.setdefault("to_report", [])
+            if fid not in n["to_report"]:
+                n["to_report"].append(fid)
+        if CURIOUS_DOMAINS & set(mind.mind(n)["domains"]) and v.get("modality") and who != culprit:
+            n.setdefault("curious", [])     # 懂行的人聽到沒見過的手法，會想弄明白
+            if fid not in n["curious"]:
+                n["curious"].append(fid)
+    if "relief" in effects and culprit and culprit != who:
+        w.adjust_opinion(who, culprit, 25 if victim == who or victim in w.family_of(who) else 5)
+    if who == "zhao" and harmful:
+        _open_case(w, "act", fid, victim=victim, place=f["place"])
+
+
 def on_learn(w, who: str, fid: str, src: str):
     f = w.facts[fid]
     t, r = f["type"], f["roles"]
     if who == "player":
         return
     n = w.npcs[who]
+    if t == "act":
+        return on_learn_act(w, who, fid, src)
 
     culprit = w.culprit_of(f)
     victim = _victim_of(f)
@@ -164,7 +207,9 @@ def suspicion(w, case: dict) -> dict[str, int]:
             related = True
         if not related:
             continue
-        culprit = w.culprit_of(f)
+        from . import mind
+
+        culprit = mind.believed_actor(w, "zhao", fid)     # 捕頭以為是誰，不是真相是誰
         if f["type"] == "smuggling":
             culprit = f["roles"].get("boatman")
         if not culprit or culprit == case.get("victim"):

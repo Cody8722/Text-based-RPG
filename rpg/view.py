@@ -10,7 +10,7 @@ tests/test_view_hiding.py 會掃整包輸出，確認沒有內部欄位外洩。
 from __future__ import annotations
 
 from . import player as player_mod
-from . import speech
+from . import mind, speech
 from .content import text as T
 from .content.locations import LOCATIONS, NIGHT_PERIODS, PERIODS
 
@@ -73,11 +73,38 @@ def people(w) -> list[dict]:
             "key": nid,
             "name": n["call"],
             "role": n["role"],
-            "attitude": T.attitude_word(w.opinion(nid, "player")),
+            "attitude": T.attitude_word(mind.shown_attitude(w, nid)),   # 看得到的是對方表現出來的樣子
             "last_seen": ({"day": w.display_day(seen["day"]), "place": LOCATIONS[seen["place"]]["name"]} if seen else None),
             "status": status,
         })
     return out
+
+
+def self_view(w) -> dict:
+    """玩家對自己與身邊事物的理解——全部是玩家腦中的版本：自己的說法、自己的推測、自己對東西的叫法。
+    不放：天賦實際被裁定成什麼、能力的真實強度、東西的真實身分。"""
+    from .content.nature import SKILLS
+
+    p = w.player
+    m = mind.mind(p)
+    obs = []
+    for tid, b in m["things"].items():
+        host = b.get("host") or b.get("holder")
+        whose = "你自己" if host == "player" else (w.name(host) if host in p["met"] else "某個人") if host else ""
+        where = mind.region_label(b["noticed"].get("region"), m["domains"])
+        obs.append({
+            "key": tid,
+            "label": b["label"],
+            "where": f"{whose}{'的' + where if where and whose else where}",
+            "before": [h["label"] for h in b.get("history", [])],
+            "hypothesis": b.get("hypothesis"),
+        })
+    return {
+        "skills": [SKILLS[s]["name"] for s in p.get("skills", [])],
+        "talent": p.get("talent_text", ""),
+        "observations": obs,
+        "notes": [n["text"] for n in m.get("notes", [])[-8:]],
+    }
 
 
 def present(w) -> list[dict]:
@@ -127,7 +154,7 @@ def build(w, beats: list[dict] | None = None) -> dict:
     if talking and talking in w.npcs:
         n = w.npcs[talking]
         convo = {"key": talking, "name": n["call"], "role": n["role"], "look": T.demeanor(w, n),
-                 "attitude": T.attitude_word(w.opinion(talking, "player"))}
+                 "attitude": T.attitude_word(mind.shown_attitude(w, talking))}
     pending = None
     if w.pending:
         pd = w.pending
@@ -147,6 +174,7 @@ def build(w, beats: list[dict] | None = None) -> dict:
         "journal": journal(w),
         "people": people(w),
         "deeds": [T.fact_text(w, w.facts[f]) for f in reversed(p["deeds"][-30:]) if f in w.facts],
+        "self": self_view(w),
         "beats": [{"kind": b["kind"], "text": b["text"], **({"speaker": w.name(b["speaker"])} if b.get("speaker") else {})}
                   for b in (beats or [])],
         "turn": p["turn"],

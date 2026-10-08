@@ -274,20 +274,41 @@ class Narrator:
         except Exception:
             return False
 
-    def call(self, system: str, user: str) -> str:
+    def _chat(self, system: str, user: str, fmt: dict, temperature: float) -> dict:
         body = {
             "model": self.model,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "think": False,
-            "format": {"type": "object", "properties": {"narrative": {"type": "string"}}, "required": ["narrative"]},
-            "options": {"num_ctx": 8192, "temperature": 0.8},
+            "format": fmt,
+            "options": {"num_ctx": 8192, "temperature": temperature},
             "stream": False,
         }
         req = urllib.request.Request(f"{self.url}/api/chat", data=json.dumps(body).encode("utf-8"),
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             data = json.loads(r.read().decode("utf-8"))
-        obj = parse_json_object(data["message"]["content"])
+        return parse_json_object(data["message"]["content"])
+
+    def ask_json(self, system: str, user: str, schema: dict) -> dict:
+        """理解用的呼叫（解析玩家的行動或天賦）：回傳原始物件，呼叫端一律要過白名單驗證。"""
+        return self._chat(system, user, schema, 0.1)
+
+    def intent_llm(self):
+        """給自由行動解析用的 LLM（沒有啟用時是 None，改用詞表解析）。"""
+        from .intent import INTENT_SCHEMA
+
+        return (lambda system, user: self.ask_json(system, user, INTENT_SCHEMA)) if self.enabled else None
+
+    def talent_llm(self):
+        from . import talents
+
+        if not self.enabled:
+            return None
+        return lambda text: self.ask_json(*talents.llm_prompt(text), talents.CLAIMS_SCHEMA).get("claims")
+
+    def call(self, system: str, user: str) -> str:
+        obj = self._chat(system, user, {"type": "object", "properties": {"narrative": {"type": "string"}},
+                                        "required": ["narrative"]}, 0.8)
         if "narrative" not in obj and narrative_of(obj) is not None:
             with self.lock:
                 self.stats["schema_key_fixed"] = self.stats.get("schema_key_fixed", 0) + 1

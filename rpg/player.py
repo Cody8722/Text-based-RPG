@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 
-from . import behaviors, dialogue, sim, speech
+from . import act, behaviors, dialogue, reactions, sim, speech, views
 from .content import text as T
 from .content.locations import LOCATIONS, NIGHT_PERIODS
 from .world import TICKS_PER_DAY, TICKS_PER_PERIOD, World
@@ -68,7 +68,7 @@ def offer_backgrounds(rng, k: int = 3) -> list[str]:
 
 def prowess(w: World) -> float:
     p = w.player
-    base = p["base_prowess"]
+    base = min(9.5, p["base_prowess"] + p.get("prowess_bonus", 0))
     return 10 - (10 - base) * math.exp(-0.25 * p["prowess_n"])
 
 
@@ -83,7 +83,7 @@ def deed(w: World, fid: str):
 
 
 # ---------------- 可做的事 ----------------
-def act(aid, label, group, hint=None):
+def act_(aid, label, group, hint=None):
     d = {"id": aid, "label": label, "group": group}
     if hint:
         d["hint"] = hint
@@ -95,50 +95,55 @@ def available_actions(w: World) -> list[dict]:
     if w.pending:
         return pending_actions(w)
     if jailed(w):
-        out = [act("jail_wait", "在拘房裡熬過這一天", "here")]
+        out = [act_("jail_wait", "在拘房裡熬過這一天", "here")]
         if w.free("xiaoli") and p["money"] >= 30:
-            out.append(act("jail_bribe", "偷偷塞三十文給看守的衙役", "here"))
+            out.append(act_("jail_bribe", "偷偷塞三十文給看守的衙役", "here"))
         return out
+    opts = w.flags.get("_do_opts") or []
+    if opts:
+        clarify = [act_("do_opt:%d" % i, o["label"], "clarify") for i, o in enumerate(opts)]
+    else:
+        clarify = []
     if p.get("talking_to"):
         nid = p["talking_to"]
         if nid in w.npcs and (w.free(nid) and w.npcs[nid]["location"] == p["location"] or
                               w.npcs[nid]["status"] == "jailed" and p["location"] == "yamen"):
-            return dialogue.talk_actions(w, nid)
+            return clarify + dialogue.talk_actions(w, nid)
         p["talking_to"] = None
     loc = p["location"]
-    out = []
+    out = list(clarify)
     for nid in w.present_npcs(loc):
-        out.append(act(f"talk:{nid}", w.name(nid) if nid in p["met"] else w.npcs[nid]["role"], "people"))
+        out.append(act_(f"talk:{nid}", w.name(nid) if nid in p["met"] else w.npcs[nid]["role"], "people"))
     if loc == "yamen":
         for nid, n in w.npcs.items():
             if n["status"] == "jailed":
-                out.append(act(f"talk:{nid}", f"隔著木柵跟{w.name(nid)}說話", "people"))
+                out.append(act_(f"talk:{nid}", f"隔著木柵跟{w.name(nid)}說話", "people"))
     for nb in LOCATIONS[loc]["neighbors"]:
         opens = LOCATIONS[nb].get("open")
         if opens and w.period not in opens:
-            out.append(act(f"move:{nb}", f"{LOCATIONS[nb]['name']}（門還關著）", "move", hint="closed"))
+            out.append(act_(f"move:{nb}", f"{LOCATIONS[nb]['name']}（門還關著）", "move", hint="closed"))
         else:
-            out.append(act(f"move:{nb}", LOCATIONS[nb]["name"], "move"))
-    out.append(act("look", "四處看看", "here"))
-    out.append(act("wait", "待一會兒，看看會發生什麼", "here"))
+            out.append(act_(f"move:{nb}", LOCATIONS[nb]["name"], "move"))
+    out.append(act_("look", "四處看看", "here"))
+    out.append(act_("wait", "待一會兒，看看會發生什麼", "here"))
     if loc == "dock" and w.period not in NIGHT_PERIODS:
-        out.append(act("work_dock", "到碼頭扛貨賺點錢", "here"))
+        out.append(act_("work_dock", "到碼頭扛貨賺點錢", "here"))
     if loc == "tavern" and p["money"] >= DRINK_PRICE:
-        out.append(act("drink", f"要一壺酒，坐著聽人聊天（{DRINK_PRICE}文）", "here"))
+        out.append(act_("drink", f"要一壺酒，坐著聽人聊天（{DRINK_PRICE}文）", "here"))
     if loc == "den" and w.period in (3, 4, 5):
         for bet in (10, 30):
             if p["money"] >= bet:
-                out.append(act(f"gamble:{bet}", f"下注{bet}文", "here"))
+                out.append(act_(f"gamble:{bet}", f"下注{bet}文", "here"))
     if loc == "inn" and p["money"] >= INN_PRICE:
-        out.append(act("rest_inn", f"要一間房，睡到天亮（{INN_PRICE}文）", "here"))
+        out.append(act_("rest_inn", f"要一間房，睡到天亮（{INN_PRICE}文）", "here"))
     if loc == "temple":
-        out.append(act("sleep_temple", "在廟簷下將就睡一晚", "here"))
+        out.append(act_("sleep_temple", "在廟簷下將就睡一晚", "here"))
     if loc == "gate":
-        out.append(act("notices", "看看告示牌上貼了什麼", "here"))
+        out.append(act_("notices", "看看告示牌上貼了什麼", "here"))
     if loc in ("market", "tavern", "inn", "pharmacy") and p["money"] < 40 and p.get("watched", {}).get(loc, -1) < w.clock:
-        out.append(act("steal", "趁人不注意，摸點錢", "here", hint="risky"))
+        out.append(act_("steal", "趁人不注意，摸點錢", "here", hint="risky"))
     if p["inventory"].get("medicine", 0) > 0:
-        out.append(act("inventory", f"身上帶著{p['inventory']['medicine']}帖藥", "self", hint="info"))
+        out.append(act_("inventory", f"身上帶著{p['inventory']['medicine']}帖藥", "self", hint="info"))
     return out
 
 
@@ -147,23 +152,23 @@ def pending_actions(w: World) -> list[dict]:
     p = w.player
     out = []
     if pd["kind"] == "beating":
-        out.append(act("pend:stop", "出手阻止", "pending"))
+        out.append(act_("pend:stop", "出手阻止", "pending"))
         ln = w.loans.get(pd.get("loan")) if pd.get("loan") else None
         if ln and ln["status"] == "open" and p["money"] >= ln["due_amount"]:
-            out.append(act("pend:pay", f"替{w.name(pd['victim'])}把債還了（{ln['due_amount']}文）", "pending"))
-        out.append(act("pend:talk", "上前好言相勸", "pending"))
-        out.append(act("pend:watch", "袖手旁觀", "pending"))
+            out.append(act_("pend:pay", f"替{w.name(pd['victim'])}把債還了（{ln['due_amount']}文）", "pending"))
+        out.append(act_("pend:talk", "上前好言相勸", "pending"))
+        out.append(act_("pend:watch", "袖手旁觀", "pending"))
     elif pd["kind"] == "theft_seen":
-        out.append(act("pend:shout", "大喊一聲，當場揭穿", "pending"))
-        out.append(act("pend:silent", "裝作沒看見", "pending"))
+        out.append(act_("pend:shout", "大喊一聲，當場揭穿", "pending"))
+        out.append(act_("pend:silent", "裝作沒看見", "pending"))
     elif pd["kind"] == "player_threat":
         ln = w.loans.get(pd["loan"])
         if ln and p["money"] >= ln["due_amount"]:
-            out.append(act("pend:pay", f"把錢還了（{ln['due_amount']}文）", "pending"))
+            out.append(act_("pend:pay", f"把錢還了（{ln['due_amount']}文）", "pending"))
         elif p["money"] > 0:
-            out.append(act("pend:partial", f"先把身上的{p['money']}文全給他", "pending"))
-        out.append(act("pend:beg", "求他再寬限幾天", "pending"))
-        out.append(act("pend:fight", "跟他動手", "pending"))
+            out.append(act_("pend:partial", f"先把身上的{p['money']}文全給他", "pending"))
+        out.append(act_("pend:beg", "求他再寬限幾天", "pending"))
+        out.append(act_("pend:fight", "跟他動手", "pending"))
     return out
 
 
@@ -172,19 +177,37 @@ class ActionError(Exception):
     pass
 
 
-def perform(w: World, action_id: str, text: str | None = None) -> list[dict]:
+def see_faces(w: World):
+    """在場的人看見玩家的臉：之前只記得這張臉的事，現在知道是誰了。"""
+    loc = w.player["location"]
+    for nid in w.present_npcs(loc) if loc else []:
+        for fid in views.recognize(w, nid, "player"):
+            reactions.on_learn_act(w, nid, fid, "self")
+
+
+def perform(w: World, action_id: str, text: str | None = None, llm=None) -> list[dict]:
     """玩家做一件事。回傳這一回合的所有片段（beats）。"""
     w.feed = []
     valid = {a["id"] for a in available_actions(w)}
     if action_id == "say":
         if not w.player.get("talking_to"):
             raise ActionError("現在沒有在跟誰說話")
+    elif action_id == "do":
+        if w.pending:
+            raise ActionError("先處理眼前的事")
+        if not (text or "").strip():
+            raise ActionError("想做什麼？寫下來吧")
     elif action_id not in valid:
         raise ActionError(f"現在不能這麼做：{action_id}")
     w.player["turn"] += 1
     kind, _, arg = action_id.partition(":")
     p = w.player
-    if kind == "pend":
+    see_faces(w)
+    if kind == "do":
+        act.do(w, text or "", llm)
+    elif kind == "do_opt":
+        act.choose_option(w, int(arg))
+    elif kind == "pend":
         resolve_pending(w, arg)
     elif kind == "move":
         do_move(w, arg)
@@ -222,6 +245,7 @@ def perform(w: World, action_id: str, text: str | None = None) -> list[dict]:
         sim.beat(w, "action", "小李左右看了看，把錢收進袖子裡，悄悄拉開了木柵：「快走，就當我沒看見。」")
     elif kind == "inventory":
         sim.beat(w, "system", f"你身上有{p['inventory'].get('medicine', 0)}帖藥。")
+    see_faces(w)
     after_action(w)
     return list(w.feed)
 

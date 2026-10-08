@@ -37,10 +37,16 @@ def chance(w, owner: str, pct: float) -> bool:
     return text_rng(w, owner).random() * 100 < pct
 
 
+# 只是「顯示」用的措辭（選項標籤、見聞錄）：不能改變任何狀態——看一眼畫面不該讓世界不一樣
+PURE_OWNERS = {"_label", "_journal"}
+
+
 def pick(w, owner: str, pool: list[str], optional: bool = False, keep: int = LINE_MEMORY) -> str | None:
     """從 pool 挑一句 owner 最近沒說過的。optional=True 時全都說過就回傳 None（寧可不說，也不重複）。"""
     if not pool:
         return None
+    if owner in PURE_OWNERS:
+        return pool[0]
     mem = w.player.setdefault("said", {}).setdefault(owner, [])
     fresh = [x for x in pool if x not in mem]
     if not fresh:
@@ -119,6 +125,8 @@ def story_key(f: dict) -> str:
         return "fight:" + ":".join(sorted([str(r.get("who")), str(r.get("target"))]))
     if t in ("ill", "worse", "recovered", "death", "grieving"):
         return f"health:{r.get('who')}"
+    if t == "act":
+        return f"act:{r.get('target') or f['data'].get('thing') or f['id']}"
     if t in ("gamble_loss", "gamble_win"):
         return f"gamble:{r.get('who')}"
     if t in ("rent_unpaid", "evicted"):
@@ -505,6 +513,14 @@ KINDRED = ["「嘿，原來你也是同道中人。」", "「手藝不行啊，�
 THANKED = ["「那天的事……謝謝你。」", "「你幫過我，我記著。」", "「上回多虧了你。」"]
 
 
+def involves_player(n: dict, f: dict) -> bool:
+    """這個人「認為」這件事跟玩家有關嗎？有自己的版本就看自己的版本（不知道是誰做的，就不會來找玩家說）。"""
+    v = (n["knows"].get(f["id"]) or {}).get("view")
+    if v is not None:
+        return "player" in (v.get("actor"), v.get("host"))
+    return "player" in f["roles"].values()
+
+
 def deed_remark(w, nid) -> str | None:
     """nid 聽說過玩家做的事時，見面會提起。每個故事只提一次（故事有新進展才會再提），
     不是每個人都會提——當事人、在場的人、捕快一定會，其他人看性子。回傳整句台詞或 None。"""
@@ -514,7 +530,7 @@ def deed_remark(w, nid) -> str | None:
     best = None
     for key, facts in stories_of(w, nid).items():
         # 玩家自己告訴他的事，他不會再拿來對玩家說一遍
-        mine = [f for f in facts if "player" in f["roles"].values() and f["type"] not in MINOR_TYPES
+        mine = [f for f in facts if involves_player(n, f) and f["type"] not in MINOR_TYPES
                 and n["knows"].get(f["id"], {}).get("src") != "player"]
         if not mine or mine[-1]["day"] < w.day - 8 or remarked.get(key, 0) >= len(mine):
             continue

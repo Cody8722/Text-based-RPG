@@ -5,6 +5,9 @@
 - 所有隨機都走 world.rng（以 seed 建立），存檔時連 rng 狀態一起存，所以同樣 seed + 同樣玩家動作 = 同樣的世界。
 - 「事實」(facts) 由 Python 產生，是世界記憶的唯一來源。LLM 寫的文字永遠不會變成事實。
 - 知識是結構化的：誰知道哪條事實、從誰那裡聽來的。傳聞是另一條 truth=False 的事實，指向原始事實。
+- 世界真實只有一份（facts 的 truth=True、things、每個人的真實狀態）；每個角色的理解是自己的：
+  knows 的每一筆可以帶一個 view（這個人看到／聽到的版本：可能不知道是誰做的、用自己的話說那是什麼、被誇大過），
+  對東西的理解在 entity["mind"]["things"]（見 mind.py）。角色做決定只讀自己的版本。
 """
 
 from __future__ import annotations
@@ -58,6 +61,8 @@ class World:
         self.drifter_seq = 0
         self.flags: dict[str, bool] = {}
         self.day_offset = 0                 # 玩家抵達前，世界先自己跑了幾天
+        self.things: dict[str, dict] = {}   # 世界裡實際存在的東西（體內的、隨身的、地上的），上帝視角
+        self.thing_seq = 0
 
     def display_day(self, d: int) -> int:
         return d - self.day_offset
@@ -204,14 +209,19 @@ class World:
     def knows(self, who: str, fid: str) -> bool:
         return fid in self.ent(who)["knows"]
 
-    def learn(self, who: str, fid: str, src: str) -> bool:
-        """讓 who 知道 fid。回傳是否是新知道的。知道後會觸發白盒反應（見 reactions.on_learn）。"""
+    def learn(self, who: str, fid: str, src: str, view: dict | None = None) -> bool:
+        """讓 who 知道 fid。回傳是否是新知道的。知道後會觸發白盒反應（見 reactions.on_learn）。
+        view：who 所知道的版本（誰做的、怎麼做的、做了什麼——用 who 自己的理解）。沒有 view 代表知道事實記載的全貌。"""
         if who != "player" and who not in self.npcs:
             return False
         e = self.ent(who)
         if fid in e["knows"]:
             return False
-        e["knows"][fid] = {"day": self.day, "src": src}
+        if view is None and (src == "player" or src in self.npcs) and "view" in self.ent(src)["knows"].get(fid, {}):
+            from . import views   # 從某人那裡聽來的：聽到的是那個人的版本（經過轉述），不是事實的全貌
+
+            view = views.retell(self, src, who, fid)
+        e["knows"][fid] = {"day": self.day, "src": src, **({"view": dict(view)} if view is not None else {})}
         from . import reactions  # 延遲匯入，避免循環
 
         reactions.on_learn(self, who, fid, src)
@@ -275,6 +285,7 @@ class World:
         "seed", "world_id", "clock", "npcs", "player", "facts", "fact_seq", "loans", "loan_seq",
         "cases", "case_seq", "properties", "event_log", "feed", "pending", "weather", "prosperity",
         "medicine_stock", "trader_next_day", "genes", "mischief_log", "stats", "drifter_seq", "flags", "day_offset",
+        "things", "thing_seq",
     ]
 
     def to_dict(self) -> dict:
@@ -287,8 +298,9 @@ class World:
     @classmethod
     def from_dict(cls, d: dict) -> "World":
         w = cls.__new__(cls)
+        defaults = {"things": {}, "thing_seq": 0}     # 舊存檔沒有這些欄位
         for k in cls._FIELDS:
-            setattr(w, k, copy.deepcopy(d[k]))
+            setattr(w, k, copy.deepcopy(d[k]) if k in d else copy.deepcopy(defaults[k]))
         w.rng = random.Random()
         st = d["rng_state"]
         w.rng.setstate((st[0], tuple(st[1]), st[2]))
@@ -347,7 +359,8 @@ def make_npc(world: World, npc_id: str, spec: dict) -> dict:
     }
 
 
-def new_world(seed: int | None = None, background: str | None = None) -> World:
+def new_world(seed: int | None = None, background: str | None = None, skills=(), talent: str = "",
+              talent_llm=None) -> World:
     from . import genes, player as player_mod
 
     if seed is None:
@@ -376,8 +389,27 @@ def new_world(seed: int | None = None, background: str | None = None) -> World:
     }
     for tenant, landlord in TENANTS.items():
         w.npcs[tenant]["landlord"] = landlord
+    from . import mind
+    from .content.nature import CHRONIC_POOL, NPC_DOMAINS, NPC_THINGS
+
+    for nid, n in w.npcs.items():
+        domains, senses = NPC_DOMAINS.get(nid, ([], {}))
+        mind.init_mind(n, domains, senses)
+        for kind in NPC_THINGS.get(nid, []):
+            mind.add_thing(w, kind, host=nid)
+    for kind, pool in CHRONIC_POOL:
+        if w.rng.random() < 0.6:
+            mind.add_thing(w, kind, host=w.rng.choice(pool))
+    for nid, n in w.npcs.items():          # 每個人用自己的感官感覺自己的身體（不一定感覺得到）
+        for t in mind.things_of(w, nid, held=False):
+            noticed = mind.noticeable(w, n, t, contact=True)
+            if noticed:
+                mind.believe_thing(w, nid, t["id"], noticed, "self")
     w.trader_next_day = w.rng.randint(3, 5)
     w.player = player_mod.new_player(w, background)
+    from . import talents
+
+    talents.setup_character(w, "player", w.player["background"], skills, talent, llm=talent_llm)
     genes.apply_genes(w)
     from . import sim
 
