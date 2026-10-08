@@ -109,6 +109,8 @@ TIME_ALLOWED = {
 _RAIN = ["下雨", "雨絲", "細雨", "雨聲", "雨點", "雨幕", "大雨", "小雨", "撐傘", "雨水", "陰雨", "滂沱"]
 _SUN = ["陽光普照", "艷陽", "晴空", "萬里無雲", "陽光燦爛", "晴朗", "烈日"]
 WEATHER_CONTRADICTS = {"晴": _RAIN, "雨": _SUN, "陰": _SUN + ["下雨", "雨絲", "細雨", "大雨", "撐傘"]}
+# 「這一刻的環境」用語：時辰、光線、天氣。沿用上面的時間與天氣詞表，不另立黑名單。
+ENV_WORDS = sorted({x for ws in TIME_WORDS.values() for x in ws} | set(_RAIN) | set(_SUN))
 COMPANION_WORDS = ["你們幾", "你們一行", "你們兩", "你們三", "同伴", "同行的", "一行人", "你們一夥"]
 # 「只被提到的人」後面緊跟著這些動作 → 被寫成在場了（實測：句子裡別人的「身邊」不能算，要緊跟在名字後面）
 PRESENCE_WORDS = ["走到", "走過來", "走了過來", "走進", "走來", "站在", "坐在", "來到", "湊過來", "湊近", "朝你", "向你",
@@ -189,6 +191,19 @@ def scene_overlap(text: str, place: str) -> float:
     return len(desc & ngrams(text)) / max(1, len(desc))
 
 
+def scene_grams(place: str) -> set[str]:
+    return ngrams(LOCATIONS[place]["day"]) | ngrams(LOCATIONS[place]["night"]) if place in LOCATIONS else set()
+
+
+def ambient_grams(place: str) -> set[str]:
+    return set().union(*(ngrams(x) for x in LOCATIONS[place].get("ambient", []))) if place in LOCATIONS else set()
+
+
+def fresh_grams(said: str, template: str, pool: set[str]) -> set[str]:
+    """說書人自己寫出來、原文沒有的那些片語裡，有哪些來自 pool。"""
+    return (ngrams(said) & pool) - ngrams(template)
+
+
 def check(output, ctx: dict) -> tuple[str | None, str | None]:
     """驗證一段說書人輸出。回傳（清理後文字, None）或（None, 拒絕原因）。
     ctx 至少要有 template、names；有情境欄位（period、weather、place、arrived、absent）時一併檢查。"""
@@ -238,9 +253,18 @@ def check(output, ctx: dict) -> tuple[str | None, str | None]:
     if "place" in ctx and not ctx.get("arrived"):
         here = LOCATIONS[ctx["place"]]["name"]
         again = ARRIVAL_WORDS + [v + here for v in ("來到", "走進", "踏進", "踏入", "走到")]
-        if new(again) or scene_overlap(said, ctx["place"]) > 0.2:
+        if new(again) or scene_overlap(said, ctx["place"]) > 0.2 or len(fresh_grams(said, template, scene_grams(ctx["place"]))) >= 2:
             return None, "scene_reintro"
+        # 場景只在第一次抵達時建立。之後同一個地方的回合：不再點名這個地方；
+        # 時辰、天氣、光線只有在真的變了的回合才能寫（而且上面的時間／天氣檢查照樣守住寫得對不對）。
+        if ctx.get("mode") == "continue" and new([here]):
+            return None, "scene_repaint"
+        if ctx.get("mode") in ("continue", "return") and not ctx.get("env_changed", True) and new(ENV_WORDS):
+            return None, "scene_repaint"
     if new(EVENT_WORDS):
+        return None, "invented_event"
+    # 這個地方會自己發生的小事（路人、騾隊……）只能由世界決定要不要發生；說書人寫出來就是在替世界加事件
+    if "place" in ctx and len(fresh_grams(said, template, ambient_grams(ctx["place"]))) >= 3:
         return None, "invented_event"
     return text, None
 
@@ -294,10 +318,9 @@ class Narrator:
         return self._chat(system, user, schema, 0.1)
 
     def intent_llm(self):
-        """給自由行動解析用的 LLM（沒有啟用時是 None，改用詞表解析）。"""
-        from .intent import INTENT_SCHEMA
-
-        return (lambda system, user: self.ask_json(system, user, INTENT_SCHEMA)) if self.enabled else None
+        """給自由行動解析用的 LLM：(system, user, schema) -> dict。沒有啟用時是 None，改用詞表解析。
+        schema 每次依候選動態產生（target／means 是這次候選 id 的 enum）。"""
+        return (lambda system, user, schema: self.ask_json(system, user, schema)) if self.enabled else None
 
     def talent_llm(self):
         from . import talents
@@ -316,7 +339,13 @@ class Narrator:
 
     # ---------- 組 prompt ----------
     @staticmethod
-    def build_context(w, beats: list[dict]) -> dict | None:
+    def environment(w) -> tuple:
+        """這一刻玩家身處的環境（地點、時辰、天氣）。用來判斷「跟上一段比，環境有沒有變」。"""
+        return (w.player["location"], w.period, w.weather)
+
+    @staticmethod
+    def build_context(w, beats: list[dict], prev: tuple | None = None) -> dict | None:
+        """prev：上一段說書時的 environment()；None 代表不知道（剛讀檔），當作環境可能變了。"""
         rew = [b for b in beats if b["kind"] in REWRITE_KINDS]
         if not rew or all(b["kind"] in DIALOGUE_KINDS for b in rew):
             return None   # 純對話：台詞已經是定稿，照原樣顯示
@@ -328,43 +357,73 @@ class Narrator:
         on_stage = [x for x in names if x in here]
         mentioned = [x for x in names if x not in here]
         place = LOCATIONS[loc]
+        # 場景模式由片段的結構決定（抵達片段自己標了 scene），不靠比對文字
+        arrive = [b for b in rew if b["kind"] == "arrive"]
+        if any(b.get("scene") == "establish" for b in arrive) or place["day"] in template or place["night"] in template:
+            mode = "establish"      # 第一次（或隔了很久才）來到這裡：可以建立場景印象
+        elif arrive:
+            mode = "return"         # 剛回到不久前來過的地方：點到為止
+        else:
+            mode = "continue"       # 一直待在這裡：從剛發生的事寫起
+        shift = []
+        if prev is not None and prev[1] != w.period:
+            shift.append(f"時辰從{PERIODS[prev[1]]}到了{PERIODS[w.period]}")
+        if prev is not None and prev[2] != w.weather:
+            shift.append(f"天氣轉成{w.weather}")
         return {
             "template": template,
             "names": names,
             "period": w.period,
             "weather": w.weather,
             "place": loc,
-            "arrived": place["day"] in template or place["night"] in template,
+            "mode": mode,
+            "arrived": mode == "establish",
+            "env_changed": prev is None or bool(shift),
+            "shift": "、".join(shift),
             "on_stage": on_stage,
             "absent": mentioned,
             "others": [n["call"] for i, n in w.npcs.items() if i not in NPCS and n["call"] not in template],
             "scene": f"{LOCATIONS[loc]['name']}，{PERIODS[w.period]}，{w.weather}",
             "cast": "你" + ("、" + "、".join(on_stage) if on_stage else ""),
             "mentioned": "、".join(mentioned),
-            "length": int(len(template) * 1.3) + 20,
+            "length": int(len(template) * 1.3) + 20 if mode == "establish" else int(len(template) * 1.2) + 15,
         }
 
     @staticmethod
     def prompts(ctx: dict) -> tuple[str, str]:
-        system = (
+        mode = ctx.get("mode", "establish" if ctx.get("arrived") else "continue")
+        base = (
             "你是一位說書人，替一款發生在江南小鎮「青石鎮」的文字冒險遊戲，把剛剛發生的事講給玩家聽。"
             "玩家在故事裡以「你」稱呼。下面的「本段已發生的事」全都已經確定，你的工作是把它們串成一段流暢、有畫面的敘事："
-            "引號「」裡的台詞逐字照抄，事件的結果、出場的人、提到的數目都照原樣保留，"
-            "你補上的只有動作、神情和此刻的氣氛。"
-            "這一段緊接在上一段之後，玩家已經熟悉這裡的場景和人物，敘事就從剛發生的事寫起。"
-            "篇幅貼近指定的字數。全文使用繁體中文，只包含文字與標點符號。輸出一個 JSON 物件，欄位 narrative 放這段敘事。"
+            "引號「」裡的台詞逐字照抄，事件的結果、出場的人、提到的數目都照原樣保留。"
         )
-        user = f"【場景】{ctx['scene']}\n【這一段在場的人】{ctx['cast']}\n"
+        if mode == "establish":
+            focus = ("玩家剛來到這個地方，這一段可以讓玩家對這裡有個印象；"
+                     "你補上的是動作、神情和此刻的氣氛，景物以本段寫到的為主。")
+        elif mode == "return":
+            focus = ("玩家剛回到一個不久前才來過的地方，這裡的景物玩家都看過了；"
+                     "敘事從剛發生的事寫起，你補上的是人物的動作和神情。")
+        else:
+            focus = ("這一段緊接在上一段之後，玩家一直待在同一個地方，四周的景物玩家都看過了；"
+                     "敘事從剛發生的事寫起，寫的是人和事，你補上的是人物的動作和神情。")
+        if mode != "establish" and ctx.get("shift"):
+            focus += f"這段時間裡{ctx['shift']}，可以用一句話帶到這個變化。"
+        system = base + focus + "篇幅貼近指定的字數。全文使用繁體中文，只包含文字與標點符號。輸出一個 JSON 物件，欄位 narrative 放這段敘事。"
+        if mode == "establish" or ctx.get("env_changed", True):
+            user = f"【場景】{ctx['scene']}\n"
+        else:
+            user = f"【地點】{LOCATIONS[ctx['place']]['name']}（玩家已經在這裡）\n" if ctx.get("place") in LOCATIONS else ""
+        user += f"【這一段在場的人】{ctx['cast']}\n"
         if ctx.get("mentioned"):
             user += f"【只在話裡提到、此刻不在場的人】{ctx['mentioned']}\n"
         user += f"【篇幅】約{ctx['length']}字\n【本段已發生的事】\n{ctx['template']}"
         return system, user
 
     # ---------- 非同步工作 ----------
-    def submit(self, w, beats: list[dict]) -> str | None:
+    def submit(self, w, beats: list[dict], prev: tuple | None = None) -> str | None:
         if not self.enabled:
             return None
-        ctx = self.build_context(w, beats)
+        ctx = self.build_context(w, beats, prev)
         if not ctx:
             return None
         jid = uuid.uuid4().hex[:12]
@@ -399,9 +458,9 @@ class Narrator:
                 self.stats["reasons"][rec["reason"]] = self.stats["reasons"].get(rec["reason"], 0) + 1
         return rec
 
-    def narrate(self, w, beats: list[dict]) -> dict | None:
+    def narrate(self, w, beats: list[dict], prev: tuple | None = None) -> dict | None:
         """同步版：這一回合不需要說書人時回傳 None。"""
-        ctx = self.build_context(w, beats)
+        ctx = self.build_context(w, beats, prev)
         if not ctx:
             return None
         return {**self.narrate_ctx(ctx), "ctx": ctx}

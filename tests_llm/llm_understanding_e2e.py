@@ -35,10 +35,11 @@ ACTION_TEXTS = [
     "幫他治一治",
     "我想對著月亮唱歌",
     "我想摸摸我帶著的那把刀",
+    "利用超音波碎石術破壞金丹",
 ]
 
 STATS = {"talent_calls": 0, "talent_valid": 0, "intent_calls": 0, "intent_valid": 0, "agree_verb": 0,
-         "agree_target": 0, "errors": 0}
+         "agree_target": 0, "errors": 0, "rules_reliable": 0}
 _NAR: Narrator | None = None
 
 
@@ -58,6 +59,7 @@ def tearDownModule():
         print(f"Talent parses: {t}  usable after validation: {STATS['talent_valid']}/{t}", flush=True)
         print(f"Action parses: {i}  usable after validation: {STATS['intent_valid']}/{i}  "
               f"same verb as rules: {STATS['agree_verb']}/{i}  same target as rules: {STATS['agree_target']}/{i}", flush=True)
+        print(f"Handled by rules alone in the game (no LLM call): {STATS['rules_reliable']}/{i}", flush=True)
         print(f"Errors/timeouts (fell back to rules): {STATS['errors']}\n" + "=" * 64, flush=True)
 
 
@@ -117,20 +119,23 @@ class ActionUnderstandingTests(unittest.TestCase):
                     STATS["errors"] += 1
                 llm_it = intent.validate_llm_intent(raw, cands, text)
                 rule_it, _ = intent.parse_rules(w, text, cands)
+                STATS["rules_reliable"] += intent.reliable(text, rule_it)   # 遊戲裡這句根本不會呼叫 LLM
                 if llm_it:
                     STATS["intent_valid"] += 1
                     self.assertIn(llm_it["target"], {c["id"] for c in cands["targets"]} | {None})
                     if rule_it:
                         STATS["agree_verb"] += llm_it["verb"] == rule_it["verb"]
                         STATS["agree_target"] += llm_it["target"] == rule_it["target"]
-                    # 用 LLM 理解出的意圖去做 ＝ 把同一個意圖直接交給世界：LLM 說的任何其他東西都不影響結果
+                    # 遊戲裡選中的意圖（詞表可靠時用詞表，否則用驗證過的 LLM 結果）去做 ＝ 把同一個意圖直接交給世界：
+                    # LLM 說的任何其他東西都不影響結果
                     a = World.from_dict(json.loads(snapshot))
                     b = World.from_dict(json.loads(snapshot))
-                    player_mod.perform(a, "do", text, llm=lambda s, u: raw)
+                    chosen, _ = intent.parse(World.from_dict(json.loads(snapshot)), text, llm=lambda *x: raw)
+                    player_mod.perform(a, "do", text, llm=lambda *a: raw)
                     b.feed = []
                     b.player["turn"] += 1
                     player_mod.see_faces(b)
-                    act.resolve(b, dict(llm_it))
+                    act.resolve(b, dict(chosen))
                     player_mod.see_faces(b)
                     player_mod.after_action(b)
                     for x in (a, b):
@@ -140,5 +145,5 @@ class ActionUnderstandingTests(unittest.TestCase):
                     self.assertEqual({k: v["health"] for k, v in a.npcs.items()}, {k: v["health"] for k, v in b.npcs.items()})
                 # 不管 LLM 怎麼回，這一步都要正常完成
                 c = World.from_dict(json.loads(snapshot))
-                beats = player_mod.perform(c, "do", text, llm=lambda s, u: raw)
+                beats = player_mod.perform(c, "do", text, llm=lambda *a: raw)
                 self.assertTrue(beats)
