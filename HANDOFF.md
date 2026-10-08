@@ -136,7 +136,7 @@ docs/reviews/     舊 MVP 的審查文件
 前端 POST /api/act {id:"do", text}
  → intent.parse：候選＝玩家「以為」在這裡的人與東西（用玩家的叫法）；
      先用詞表：只認出一種動作、對象有著落、要「作用」時方式也講明了（intent.reliable）→ 直接用，不呼叫 LLM；
-     其餘才問 LLM（schema 依這次候選動態產生：target／means 是候選 id 的 enum）→ 白名單驗證 → 不過就回到詞表結果；
+     其餘才問 LLM（候選用短代號 T1／M1，伺服器對回真正的 id）→ 白名單驗證（一字不差）→ 不過就回到詞表結果；
      解析不出 → 給選項（do_opt:N）
  → act.resolve：
      · note（推測）→ 只寫進玩家腦中

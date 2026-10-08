@@ -198,12 +198,19 @@ class ParserTests(unittest.TestCase):
         cands = intent.candidates(w)
         system, user, schema = intent.llm_prompt("隨便做點什麼", cands)
         props = schema["properties"]
-        self.assertEqual(props["target"]["enum"], [c["id"] for c in cands["targets"]] + [None])
-        self.assertEqual(props["means"]["enum"], [m["id"] for m in cands["means"]] + [None])
+        code = intent.codes(cands)
+        self.assertEqual([code[k] for k in props["target"]["enum"] if k], [c["id"] for c in cands["targets"]])
+        self.assertEqual([code[k] for k in props["means"]["enum"] if k], [m["id"] for m in cands["means"]])
         self.assertEqual(props["modality"]["enum"], intent.MODALITIES + [None])
         self.assertEqual(props["purpose"]["enum"], intent.PURPOSES + [None])
-        for c in cands["targets"]:
-            self.assertIn(c["id"], user)
+        for k in code:
+            self.assertIn(k, user)
+        self.assertFalse(any(":" in k for k in code), "the codes the model copies have no colon to drop")
+        # 每個代號都對回這次的候選；所以 LLM 能選到的一定是伺服器列出的東西
+        for k, real in code.items():
+            field = "target" if k.startswith("T") else "means"
+            got = intent.validate_llm_intent({"verb": "examine", field: k}, cands, "x")
+            self.assertEqual(got[field], real)
 
     def test_an_id_must_be_copied_exactly(self):
         w, tid = staged()
@@ -211,6 +218,9 @@ class ParserTests(unittest.TestCase):
         short = f"t:{tid}"[2:]
         self.assertIsNone(intent.validate_llm_intent({"verb": "apply", "target": short}, cands, "x"))
         self.assertIsNone(intent.validate_llm_intent({"verb": "apply", "target": "p:nobody"}, cands, "x"))
+        self.assertIsNone(intent.validate_llm_intent({"verb": "apply", "target": "T99"}, cands, "x"))
+        self.assertIsNone(intent.validate_llm_intent({"verb": "apply", "target": "M1"}, cands, "x"), "a means code is not a target")
+        self.assertIsNone(intent.validate_llm_intent({"verb": "apply", "target": "t2"}, cands, "x"), "codes are exact too")
         self.assertIsNone(intent.validate_llm_intent({"verb": "apply", "target": f"t:{tid}", "means": "a:zz"}, cands, "x"))
         for odd in ({"verb": "apply", "target": [f"t:{tid}"]}, {"verb": ["apply"]}, {"verb": "apply", "means": {"id": 1}},
                     {"verb": "apply", "modality": ["vibration"]}, ["apply"], None):

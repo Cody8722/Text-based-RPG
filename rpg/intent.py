@@ -245,49 +245,71 @@ VERB_MEANING = {
 }
 
 
+def codes(cands: dict) -> dict:
+    """給 LLM 看的短代號 → 真正的候選 id。代號沒有冒號（實測模型會把「t:t7：石淋」截成 t7），
+    依候選順序固定產生；伺服器自己對回去，模型永遠碰不到真正的 id 格式。"""
+    out = {f"T{i}": c["id"] for i, c in enumerate(cands["targets"], 1)}
+    out.update({f"M{i}": m["id"] for i, m in enumerate(cands["means"], 1)})
+    return out
+
+
 def schema_for(cands: dict) -> dict:
-    """這一次請求專用的 schema：target／means 只能是這次伺服器列出的 id，其他欄位也只能是固定清單裡的值。
-    模型在生成時就只寫得出合法的值（Ollama 依 schema 限制輸出）；伺服器端的白名單驗證照樣保留。"""
+    """這一次請求專用的 schema：target／means 只能是這次的代號，其他欄位只能是固定清單裡的值。
+    注意：實測 Ollama 0.31.1 + qwen3.5 不會依 format 的 schema 限制輸出（連必填欄位都不管），
+    所以真正的防線是提示（代號、一個欄位一個值）＋伺服器端白名單；schema 只是在支援的版本上多一層。"""
+    code = codes(cands)
+
     def one_of(values):
-        return {"enum": [*values, None]}
+        return {"type": ["string", "null"], "enum": [*values, None]}
     return {"type": "object", "properties": {
-        "target": one_of(c["id"] for c in cands["targets"]),
         "verb": {"type": "string", "enum": VERBS},
-        "means": one_of(m["id"] for m in cands["means"]),
+        "target": one_of(k for k in code if k.startswith("T")),
+        "means": one_of(k for k in code if k.startswith("M")),
         "modality": one_of(MODALITIES),
         "purpose": one_of(PURPOSES),
-    }, "required": ["target", "verb"]}
+    }, "required": ["verb", "target", "means", "modality", "purpose"]}
 
 
 def llm_prompt(text: str, cands: dict) -> tuple[str, str, dict]:
     """回傳 (system, user, schema)。"""
     verbs = "；".join(f"{v}＝{VERB_MEANING[v]}" for v in VERBS)
-    system = ("你是一個文字冒險遊戲的指令理解器，把玩家的一句話對應到固定的欄位。"
-              "target 與 means 填的是清單裡「：」前面那一整串 id，照清單原樣複製，包含冒號與前綴（例如清單寫 p:abc，就填 p:abc）；"
+    system = ("你是一個文字冒險遊戲的指令理解器，把玩家的一句話整理成一個 JSON 物件，欄位是 verb、target、means、modality、purpose，"
+              "每個欄位只放一個值。"
+              "target 是對象清單裡的一個代號（像 T2 這樣一個英文字母加數字），means 是能力與物品清單裡的一個代號（像 M1）；"
               "清單裡沒有合適的就填 null。"
               f"verb 的意思：{verbs}。"
-              f"modality 是作用的方式，從 {MODALITIES} 選一個或 null；purpose 從 {PURPOSES} 選一個或 null。"
+              f"modality 是作用的方式，從 {MODALITIES} 選一個或填 null；purpose 從 {PURPOSES} 選一個或填 null。"
               "玩家可能用自己的說法稱呼清單裡的東西，依意思對應到最接近的那一項。"
-              "你只負責理解玩家想做什麼，事情的結果由遊戲世界決定。輸出一個 JSON 物件。")
-    lines = [f"- {c['id']}：{c['label']}" for c in cands["targets"]]
-    mlines = [f"- {m['id']}：{m['label']}" for m in cands["means"]]
-    user = "【候選對象】\n" + "\n".join(lines) + "\n【能力與物品】\n" + ("\n".join(mlines) or "（無）") + f"\n【玩家說】{text}"
+              "你只負責理解玩家想做什麼，事情的結果由遊戲世界決定。")
+    code = codes(cands)
+    tl = [f"{k}　{c['label']}" for k, c in zip((k for k in code if k.startswith("T")), cands["targets"])]
+    ml = [f"{k}　{m['label']}" for k, m in zip((k for k in code if k.startswith("M")), cands["means"])]
+    user = "【對象】\n" + "\n".join(tl) + "\n【能力與物品】\n" + ("\n".join(ml) or "（無）") + f"\n【玩家說】{text}"
     return system, user, schema_for(cands)
 
 
 def validate_llm_intent(raw, cands: dict, text: str) -> dict | None:
-    """白名單：target／means 必須是這次的候選 id（一字不差；「t7」不等於「t:t7」，不做任何補全），其餘欄位丟掉。"""
+    """白名單：target／means 必須一字不差地是這次的代號（或原本的候選 id）；「t7」這種不完整的寫法不收、不補全。
+    欄位只能是字串或 null；其餘欄位（包括任何「結果」）一律丟掉。"""
     if not isinstance(raw, dict) or not isinstance(raw.get("verb"), str) or raw["verb"] not in VERBS:
         return None
     if any(raw.get(k) is not None and not isinstance(raw.get(k), str) for k in ("target", "means", "modality", "purpose")):
         return None   # 欄位只能是字串或 null（實測模型偶爾會回陣列）：不收，不猜
+    code = codes(cands)
     tids = {c["id"] for c in cands["targets"]}
     mids = {m["id"] for m in cands["means"]}
-    target = raw.get("target")
-    means = raw.get("means")
-    if target is not None and target not in tids:
-        return None
-    if means is not None and means not in mids:
+
+    def pick(v, ids, prefix):
+        if v is None:
+            return None, True
+        if v in ids:
+            return v, True
+        if v.startswith(prefix) and v in code:
+            return code[v], True
+        return None, False
+    target, ok_t = pick(raw.get("target"), tids, "T")
+    means, ok_m = pick(raw.get("means"), mids, "M")
+    if not (ok_t and ok_m):
         return None
     return {"verb": raw["verb"], "target": target, "means": means,
             "modality": raw.get("modality") if raw.get("modality") in MODALITIES else None,
