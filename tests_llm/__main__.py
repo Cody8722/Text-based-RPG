@@ -3,7 +3,7 @@
 真模型整合測試的入口（跟 `python -m unittest discover -s tests` 的快速測試分開）。
 - 連不上 Ollama／沒有模型：印出 LLM UNAVAILABLE 與原因，結束碼 0（環境問題不算失敗）；加 --require 則結束碼 3。
 - 跑完會印統計報告，完整逐回合紀錄寫到 tests_llm/reports/。
-- --compare 會逐一測試已下載的候選說書模型，不修改 .env；也可在後面指定模型名稱。
+- --compare 不帶名稱時會探測本機 Ollama 已下載的模型；可在後面指定模型名稱。開始前會顯示測試清單與時間粗估並等待確認，不修改 .env。
 """
 
 from __future__ import annotations
