@@ -22,13 +22,13 @@ python -m rpg
 先用 Ollama 下載想比較的模型，再執行：
 
 ```bash
-python -m tests_llm --compare
+python -m tests_llm --compare --quick
 ```
 
-不帶模型名稱時，程式會直接探測本機 Ollama 已下載的模型；指定模型名稱時則只測指定項目。它會先列出測試清單和時間粗估，等你確認後才開始，不需要修改 `.env` 或手動切換 `RPG_MODEL`。估時優先參考本機前次實測；首次測試則按模型大小粗估。報告會比較敘事接受率、退回原因與生成速度，完整紀錄寫在 `tests_llm/reports/`。也可以自行指定模型：
+不帶模型名稱時，程式會直接探測本機 Ollama 已下載的生成模型（自動略過嵌入模型）；指定模型名稱時則只測指定項目。加上 `--quick` 可只跑快速代表性情境；不加則執行完整情境集。它會先列出測試清單和時間粗估，等你確認後才開始，不需要修改 `.env` 或手動切換 `RPG_MODEL`。估時優先參考本機前次實測；首次測試則按模型大小粗估。報告會比較敘事接受率、退回原因與生成速度，完整紀錄寫在 `tests_llm/reports/`。也可以自行指定模型：
 
 ```bash
-python -m tests_llm --compare qwen3.5:9b maternion/mimo-v2.6:9b-instruct
+python -m tests_llm --compare qwen3.5:9b "hf.co/AtomicChat/Qwen3.5-4B-GGUF:Q4_K_M" --quick
 ```
 
 ## 操作
