@@ -3,7 +3,7 @@
 真模型整合測試的入口（跟 `python -m unittest discover -s tests` 的快速測試分開）。
 - 連不上 Ollama／沒有模型：印出 LLM UNAVAILABLE 與原因，結束碼 0（環境問題不算失敗）；加 --require 則結束碼 3。
 - 跑完會印統計報告，完整逐回合紀錄寫到 tests_llm/reports/。
-- --compare 不帶名稱時會探測本機 Ollama 已下載的模型；可在後面指定模型名稱。開始前會顯示測試清單與時間粗估並等待確認，不修改 .env。
+- --compare 不帶名稱時會探測本機 Ollama 已下載的生成模型；可在後面指定模型名稱。開始前會顯示清單與時間粗估並等待確認，不修改 .env。加 --quick 可只跑快速情境。
 """
 
 from __future__ import annotations
@@ -20,7 +20,8 @@ def main(argv=None) -> int:
     ap.add_argument("--only", nargs="*", help="只跑名稱含這些字的測試，例如 --only time absent")
     ap.add_argument("--require", action="store_true", help="Ollama 不可用時當成失敗（結束碼 3）")
     ap.add_argument("--rescore", metavar="REPORT.json", help="不呼叫模型：用現在的驗證器重新判定一份已記錄的執行結果")
-    ap.add_argument("--compare", nargs="*", metavar="MODEL", help="比較已安裝的候選說書模型；可選擇在後面列出模型名稱")
+    ap.add_argument("--compare", nargs="*", metavar="MODEL", help="比較本機已下載的說書模型；可選擇在後面列出模型名稱")
+    ap.add_argument("--quick", action="store_true", help="模型比較只跑快速代表性情境")
     a = ap.parse_args(argv)
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -43,7 +44,7 @@ def main(argv=None) -> int:
     if a.compare is not None:
         from . import compare
 
-        return compare.run(a.compare or None, only=a.only)
+        return compare.run(a.compare or None, only=a.only, quick=a.quick)
 
     from . import ollama_env
 
