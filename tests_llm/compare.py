@@ -126,7 +126,13 @@ def run(models: list[str] | None = None, only: list[str] | None = None) -> int:
             basis = "上次實測均值" if measured else "依模型大小粗估"
             print(f"  {model}: 約 {_duration(model_low)}–{_duration(model_high)}（{basis}）")
         print(f"合計約 {_duration(low)}–{_duration(high)}；不含下載時間。")
-        print("按 Ctrl+C 可取消；預覽後會立即開始。")
+        try:
+            answer = input("要開始比較嗎？[y/N] ").strip().lower()
+        except EOFError:
+            answer = ""
+        if answer not in ("y", "yes"):
+            print("已取消比較。")
+            return 0
     else:
         print("目前沒有已下載的候選模型，無法開始比較。")
         for model, _ in missing:
