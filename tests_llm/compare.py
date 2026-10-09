@@ -1,8 +1,9 @@
 """Compare installed Ollama models on the RPG narrator contract without changing .env.
 
 Run with: python -m tests_llm --compare
-Only installed models are tested; missing models are listed with pull commands.
-Before running, show the installed selection and a rough time estimate.
+Without model arguments, discover every model installed in the local Ollama instance.
+With explicit model arguments, test only those models and report any that are missing.
+Before running, show the selected models and a rough time estimate.
 """
 from __future__ import annotations
 
@@ -15,16 +16,21 @@ from rpg.narrator import Narrator
 
 from . import harness, ollama_env, scenarios
 
-DEFAULT_MODELS = (
-    "qwen3.5:2b",
-    "qwen3.5:9b",
-    "hf.co/AtomicChat/Qwen3.5-4B-GGUF:Q4_K_M",
-    "hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF:Q4_K_M",
-    "hf.co/Altworld/Astrea-R8-Chat-9B-GGUF:Q4_K_M",
-    "wangshenzhi/gemma2-9b-chinese-chat",
-    "hf.co/bandtor/gemma-4-E4B-it-GGUF:Q4_K_M",
-    "hf.co/ggml-org/MiMo-V2.6-Distill-Qwen-9B-GGUF:Q8_0",
-)
+def _installed_models(url: str) -> tuple[list[str], str | None]:
+    """Read model names from the local Ollama tags API."""
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen(f"{url.rstrip('/')}/api/tags", timeout=3) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        names = sorted({
+            item.get("name", "")
+            for item in payload.get("models", [])
+            if item.get("name")
+        })
+        return names, None
+    except Exception as error:
+        return [], f"{type(error).__name__}: {error}"
 
 
 def _save(rows: list[dict]) -> str:
@@ -84,26 +90,38 @@ def _scenario_call_count(selected: list) -> int:
 
 def run(models: list[str] | None = None, only: list[str] | None = None) -> int:
     settings = ollama_env.settings()
-    candidates = list(dict.fromkeys(models or DEFAULT_MODELS))
     selected = [s for s in scenarios.SCENARIOS if not only or any(k in s.name for k in only)]
     if not selected:
         print("沒有符合 --only 的情境。")
         return 2
 
-    installed, missing = [], []
-    for model in candidates:
-        ok, why = ollama_env.availability(settings["url"], model)
-        (installed if ok else missing).append((model, why))
+    discovered, discovery_error = _installed_models(settings["url"])
+    if discovery_error:
+        print(f"無法探測本機 Ollama（{settings['url']}）：{discovery_error}")
+        return 3
 
-    print("模型測試預覽")
-    print(f"候選模型：{len(candidates)} 個；已下載：{len(installed)} 個；未下載：{len(missing)} 個")
+    if models:
+        candidates = list(dict.fromkeys(models))
+        installed, missing = [], []
+        for model in candidates:
+            ok, why = ollama_env.availability(settings["url"], model)
+            (installed if ok else missing).append((model, why))
+        mode = "指定模型"
+    else:
+        candidates = discovered
+        installed = [(model, "已安裝") for model in candidates]
+        missing = []
+        mode = "自動探測"
+
+    print(f"模型測試預覽（{mode}）")
+    print(f"Ollama 探測到 {len(discovered)} 個已安裝模型；本次將測 {len(installed)} 個。")
     if installed:
         print("本次會測：")
         for model, _ in installed:
             print(f"  ✓ {model}")
     if missing:
-        print("以下未下載，會略過：")
-        for model, _ in missing:
+        print("指定模型中以下尚未下載：")
+        for model, why in missing:
             print(f"  - {model}（ollama pull {model}）")
 
     if installed:
@@ -134,7 +152,7 @@ def run(models: list[str] | None = None, only: list[str] | None = None) -> int:
             print("已取消比較。")
             return 0
     else:
-        print("目前沒有已下載的候選模型，無法開始比較。")
+        print("Ollama 本機沒有可測的模型，無法開始比較。")
         for model, _ in missing:
             print(f"  下載：ollama pull {model}")
         return 3
