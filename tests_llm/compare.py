@@ -33,6 +33,15 @@ def _installed_models(url: str) -> tuple[list[str], str | None]:
         return [], f"{type(error).__name__}: {error}"
 
 
+def _is_embedding_model(name: str) -> bool:
+    """Embedding-only models cannot generate narrator prose."""
+    short_name = name.rsplit("/", 1)[-1].split(":", 1)[0].casefold()
+    return "embed" in short_name or short_name.startswith(("bge-", "bge_"))
+
+
+QUICK_SCENARIOS = {"arrive_then_stay", "absent_mentioned", "private_persona", "time_0"}
+
+
 def _save(rows: list[dict]) -> str:
     os.makedirs(harness.REPORT_DIR, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -88,9 +97,17 @@ def _scenario_call_count(selected: list) -> int:
     )
 
 
-def run(models: list[str] | None = None, only: list[str] | None = None) -> int:
+def run(
+    models: list[str] | None = None,
+    only: list[str] | None = None,
+    quick: bool = False,
+) -> int:
     settings = ollama_env.settings()
-    selected = [s for s in scenarios.SCENARIOS if not only or any(k in s.name for k in only)]
+    selected = [
+        s for s in scenarios.SCENARIOS
+        if (not quick or s.name in QUICK_SCENARIOS)
+        and (not only or any(k in s.name for k in only))
+    ]
     if not selected:
         print("沒有符合 --only 的情境。")
         return 2
@@ -108,13 +125,22 @@ def run(models: list[str] | None = None, only: list[str] | None = None) -> int:
             (installed if ok else missing).append((model, why))
         mode = "指定模型"
     else:
-        candidates = discovered
+        embedding_models = [model for model in discovered if _is_embedding_model(model)]
+        candidates = [model for model in discovered if model not in embedding_models]
         installed = [(model, "已安裝") for model in candidates]
         missing = []
         mode = "自動探測"
 
-    print(f"模型測試預覽（{mode}）")
-    print(f"Ollama 探測到 {len(discovered)} 個已安裝模型；本次將測 {len(installed)} 個。")
+    print(f"模型測試預覽（{mode}{'／快速情境' if quick else ''}）")
+    print(
+        f"Ollama 探測到 {len(discovered)} 個已安裝模型；"
+        f"排除 {len(embedding_models) if not models else 0} 個嵌入模型；"
+        f"本次將測 {len(installed)} 個。"
+    )
+    if not models and embedding_models:
+        print("以下是嵌入模型，不適合生成旁白，已排除：")
+        for model in embedding_models:
+            print(f"  - {model}")
     if installed:
         print("本次會測：")
         for model, _ in installed:
