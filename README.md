@@ -17,6 +17,20 @@ python -m rpg
 
 如果本機有 [Ollama](https://ollama.com/) 並已下載 `qwen3.5:9b`，遊戲會自動請它當說書人，把故事講得更生動；沒有也完全可以玩。
 
+## 比較本機說書模型
+
+先用 Ollama 下載想比較的模型，再執行：
+
+```bash
+python -m tests_llm --compare
+```
+
+程式會逐一測試已下載的候選模型，不需要修改 `.env` 或手動切換 `RPG_MODEL`。報告會比較敘事接受率、退回原因與生成速度，完整紀錄寫在 `tests_llm/reports/`。也可以自行指定模型：
+
+```bash
+python -m tests_llm --compare qwen3.5:9b maternion/mimo-v2.6:9b-instruct
+```
+
 ## 操作
 
 - 下方是你現在能做的事，數字鍵 1–9 可以快速選擇；跟人交談時可以直接打字說話。
