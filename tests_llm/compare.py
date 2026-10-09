@@ -2,13 +2,13 @@
 
 Run with: python -m tests_llm --compare
 Only installed models are tested; missing models are listed with pull commands.
-This evaluates narration only, using the same deterministic scenarios and validator
-as the regular model integration tests.
+Before running, show the installed selection and a rough time estimate.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import time
 
 from rpg.narrator import Narrator
@@ -16,11 +16,14 @@ from rpg.narrator import Narrator
 from . import harness, ollama_env, scenarios
 
 DEFAULT_MODELS = (
+    "qwen3.5:2b",
     "qwen3.5:9b",
+    "hf.co/AtomicChat/Qwen3.5-4B-GGUF:Q4_K_M",
     "hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF:Q4_K_M",
-    "maternion/mimo-v2.6:9b-instruct",
+    "hf.co/Altworld/Astrea-R8-Chat-9B-GGUF:Q4_K_M",
     "wangshenzhi/gemma2-9b-chinese-chat",
-    "fauxpaslife/Astrea-R8-Chat-9B",
+    "hf.co/bandtor/gemma-4-E4B-it-GGUF:Q4_K_M",
+    "hf.co/ggml-org/MiMo-V2.6-Distill-Qwen-9B-GGUF:Q8_0",
 )
 
 
@@ -35,6 +38,50 @@ def _save(rows: list[dict]) -> str:
     return path
 
 
+def _duration(seconds: float) -> str:
+    seconds = max(0, int(round(seconds)))
+    minutes, seconds = divmod(seconds, 60)
+    if minutes:
+        return f"{minutes} 分 {seconds} 秒"
+    return f"{seconds} 秒"
+
+
+def _previous_latencies() -> dict[str, float]:
+    path = os.path.join(harness.REPORT_DIR, "latest-compare.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        result = {}
+        for row in data.get("models", []):
+            summary = row.get("summary", {})
+            mean = summary.get("latency", {}).get("mean")
+            if mean and summary.get("model"):
+                result[summary["model"]] = float(mean)
+        return result
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _first_run_seconds(model: str) -> float:
+    """Rough fallback until this machine has a measured latency for this model."""
+    match = re.search(r"(?<!\d)(\d+(?:\.\d+)?)\s*[bB]", model)
+    params = float(match.group(1)) if match else 8.0
+    if params <= 2:
+        return 3.0
+    if params <= 4.5:
+        return 5.0
+    return 10.0
+
+
+def _scenario_call_count(selected: list) -> int:
+    # Replay the deterministic game without an LLM; this is cheap and counts
+    # exactly how many narrator calls the selected scenarios will make.
+    return sum(
+        sum(1 for turn in harness.run_scenario(scenario, None)["turns"] if turn["kind"] == "llm")
+        for scenario in selected
+    )
+
+
 def run(models: list[str] | None = None, only: list[str] | None = None) -> int:
     settings = ollama_env.settings()
     candidates = list(dict.fromkeys(models or DEFAULT_MODELS))
@@ -43,12 +90,51 @@ def run(models: list[str] | None = None, only: list[str] | None = None) -> int:
         print("沒有符合 --only 的情境。")
         return 2
 
-    rows = []
+    installed, missing = [], []
     for model in candidates:
         ok, why = ollama_env.availability(settings["url"], model)
-        if not ok:
-            print(f"略過 {model}：尚未下載。請執行：ollama pull {model}")
-            continue
+        (installed if ok else missing).append((model, why))
+
+    print("模型測試預覽")
+    print(f"候選模型：{len(candidates)} 個；已下載：{len(installed)} 個；未下載：{len(missing)} 個")
+    if installed:
+        print("本次會測：")
+        for model, _ in installed:
+            print(f"  ✓ {model}")
+    if missing:
+        print("以下未下載，會略過：")
+        for model, _ in missing:
+            print(f"  - {model}（ollama pull {model}）")
+
+    if installed:
+        calls_per_model = _scenario_call_count(selected)
+        history = _previous_latencies()
+        low = high = 0.0
+        print(f"情境：{len(selected)} 個；每個模型約呼叫說書人 {calls_per_model} 次")
+        print("各模型時間粗估：")
+        for model, _ in installed:
+            measured = history.get(model)
+            per_call = measured if measured else _first_run_seconds(model)
+            # Include model load/warm-up; show a range because machine load and
+            # prompt prefill vary. The previous benchmark mean is more useful
+            # than the parameter-size fallback when available.
+            estimate = 10 + calls_per_model * per_call
+            model_low = 10 + calls_per_model * per_call * 0.6
+            model_high = 10 + calls_per_model * per_call * 1.8
+            low += model_low
+            high += model_high
+            basis = "上次實測均值" if measured else "依模型大小粗估"
+            print(f"  {model}: 約 {_duration(model_low)}–{_duration(model_high)}（{basis}）")
+        print(f"合計約 {_duration(low)}–{_duration(high)}；不含下載時間。")
+        print("按 Ctrl+C 可取消；預覽後會立即開始。")
+    else:
+        print("目前沒有已下載的候選模型，無法開始比較。")
+        for model, _ in missing:
+            print(f"  下載：ollama pull {model}")
+        return 3
+
+    rows = []
+    for model, _ in installed:
         print(f"\n開始測試 {model}（{len(selected)} 個情境）")
         narrator = Narrator(mode="ollama", url=settings["url"], model=model, timeout=settings["timeout"])
         results = []
@@ -58,10 +144,6 @@ def run(models: list[str] | None = None, only: list[str] | None = None) -> int:
         summary = harness.summarize(results, model=model)
         rows.append({"summary": summary, "results": results})
         print(harness.format_report(summary))
-
-    if not rows:
-        print("\n沒有已安裝的候選模型可測。先下載至少一個模型，再重跑。")
-        return 3
 
     ordered = sorted(rows, key=lambda row: (
         row["summary"]["accepted"] / max(1, row["summary"]["llm_calls"]),
@@ -75,6 +157,4 @@ def run(models: list[str] | None = None, only: list[str] | None = None) -> int:
         print(f"{s['model']:<58} {rate:>7.1f}% {s['errors']:>8} {s['latency'].get('mean', 0):>10.1f}")
     path = _save(rows)
     print(f"\n完整比較報告已存到：{path}")
-    if len(rows) < len(candidates):
-        print("只測了已安裝的模型；上面的略過項目下載後可直接重跑比較。")
     return 0
