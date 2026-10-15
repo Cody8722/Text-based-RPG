@@ -20,8 +20,11 @@ MISCHIEF_CHANCE = 3   # %，每天
 
 # ---------------- 對玩家的輸出片段 ----------------
 def beat(w: World, kind: str, text: str, fid: str | None = None, **extra):
-    """extra：給說書人的結構資訊（例如抵達片段的 scene="establish"／"return"），不影響世界。"""
-    w.feed.append({"kind": kind, "text": text, "fid": fid, **extra})
+    """extra：給說書人的結構資訊（例如抵達片段的 scene="establish"／"return"），不影響世界。
+    here：這個片段發生的當下，玩家身邊有誰（動作花了時間、有人照作息離開之後，說書人仍知道剛才誰在場）。"""
+    loc = w.player.get("location")
+    here = w.present_npcs(loc) if loc else []
+    w.feed.append({"kind": kind, "text": text, "fid": fid, "here": here, **extra})
 
 
 def player_here(w: World, place: str) -> bool:

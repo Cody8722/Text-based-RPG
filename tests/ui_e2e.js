@@ -83,7 +83,7 @@ const { chromium } = require("playwright");
     const story = await page.locator("#story").innerText();
     if (/&#x?[0-9a-f]+;|&[a-z]+;/i.test(story)) await fail("story shows a raw HTML entity");
     const places = await page.locator(".k-arrive .place").allInnerTexts();
-    if (!places.length) await fail("no arrival line rendered");
+    if (!places.length && !expectNarration) await fail("no arrival line rendered");   // 有說書人時抵達句可能被改寫成敘事
     if (places.some((t) => /[。，！？、；：]$/.test(t))) await fail("bold place label ends with punctuation");
   }
   // 介面上不能出現數字化的好感度或內部欄位

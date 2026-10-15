@@ -158,6 +158,40 @@ class StorytellerAddsNothingTests(unittest.TestCase):
             fake.close()
 
 
+class OnStageAndDialogueTests(unittest.TestCase):
+    def test_someone_who_left_during_the_action_was_still_there(self):
+        """實測：「環顧四周」花了時間，時辰一變，片段裡的人照作息走了；說書人的情境不能說他不在場。"""
+        from tests_llm import scenarios
+
+        told = None
+        for step, (w, aid, beats) in enumerate(scenarios.iterate(scenarios.BY_NAME["arrive_then_stay"])):
+            ctx = Narrator.build_context(w, beats, told)
+            if ctx:
+                told = Narrator.environment(w)
+            if step == 7:
+                break
+        call = w.npcs["wu"]["call"]
+        self.assertIn(call, ctx["template"])
+        self.assertNotEqual(w.npcs["wu"]["location"], w.player["location"], "the scenario still has the person leave")
+        self.assertIn(call, ctx["on_stage"])
+        self.assertNotIn(call, ctx["absent"])
+        system, user = Narrator.prompts(ctx)
+        self.assertNotIn("此刻不在場", user)
+
+    def test_the_storyteller_cannot_put_new_words_in_anyones_mouth(self):
+        w, beats = opening()
+        told = Narrator.environment(w)
+        ctx = Narrator.build_context(w, play(w, "look"), told)
+        tpl = ctx["template"]
+        self.assertEqual(check(tpl + "有人低聲說：「鎮子靜了。」", ctx)[1], "dialogue")
+        w2, _ = opening()
+        ctx2 = Narrator.build_context(w2, [{"kind": "speech", "text": "吳伯：「進鎮出鎮，自便。」", "speaker": "wu"},
+                                           {"kind": "action", "text": "你點了點頭。"}], None)
+        # 原文的台詞可以拆開、中間插動作；字不能多
+        self.assertIsNotNone(check("吳伯抬眼：「進鎮出鎮，」他擺擺手，「自便。」你點了點頭。", ctx2)[0])
+        self.assertEqual(check("吳伯：「進鎮出鎮，自便。」又補一句：「早點回去。」你點了點頭。", ctx2)[1], "dialogue")
+
+
 # ---------------------------------------------------------------- 4 時辰與天氣
 class TimeAndWeatherTests(unittest.TestCase):
     def test_one_passage_cannot_hold_two_times_of_day(self):
@@ -167,6 +201,39 @@ class TimeAndWeatherTests(unittest.TestCase):
         other = next(x for g, ws in TIME_WORDS.items() if g not in TIME_ALLOWED[ctx["period"]] for x in ws)
         self.assertIsNotNone(check(ok + "未散。" + ctx["template"], ctx)[0])
         self.assertEqual(check(ok + "未散。" + ctx["template"] + other + "的光照在地上。", ctx)[1], "time")
+
+    def test_talking_about_rain_is_not_changing_the_weather(self):
+        """實測誤擋：原文「一下雨就疼」被改寫成「每逢陰雨便劇痛」。原文本身在講雨時，換個說法不算改天氣；
+        原文沒提到雨卻寫下雨，照樣擋。"""
+        w, beats = opening()
+        base = {"names": [], "period": 2, "weather": "晴", "place": w.player["location"], "arrived": False,
+                "absent": [], "others": [], "mode": "continue", "env_changed": False}
+        talk = dict(base, template="你和吳伯聊起他那條一下雨就疼的瘸腿。")
+        self.assertIsNotNone(check("你和吳伯聊起他那條每逢陰雨便劇痛的瘸腿，他揉了揉膝蓋。", talk)[0])
+        plain = dict(base, template="你和吳伯聊起他那條瘸腿，他說是當年留下的。")
+        self.assertEqual(check("細雨落下，你和吳伯聊起他那條瘸腿，他說是當年留下的。", plain)[1], "weather")
+
+    def test_telling_the_change_of_time_may_name_the_old_time(self):
+        """筆電實測誤擋：提示請模型帶一句「從深夜到了清晨」，模型照做卻因為寫到「深夜」被擋。
+        同一段也寫到現在的時辰＝在交代轉換，可以；只寫舊的時辰照樣擋。"""
+        base = {"template": "你來到窄巷。", "names": [], "period": 0, "weather": "晴", "place": "alley", "arrived": False,
+                "absent": [], "others": [], "mode": "return", "env_changed": True, "shift": "時辰從深夜到了清晨",
+                "prev_period": 5}
+        self.assertIsNotNone(check("從深夜到清晨，你步入窄巷，巷影依舊熟悉。", base)[0])
+        self.assertEqual(check("深夜裡，你步入窄巷，巷影依舊熟悉。", base)[1], "time")
+        self.assertEqual(check("從深夜到清晨，你步入窄巷，巷影依舊熟悉。", dict(base, prev_period=None))[1], "time")
+
+    def test_coming_back_may_nod_at_a_known_feature(self):
+        """筆電實測誤擋：剛回到的地方順口帶一句已知的景物，不是重新介紹；整段描寫照樣擋。"""
+        name = LOCATIONS["temple"]["name"] if "temple" in LOCATIONS else None
+        place = "temple" if name else next(iter(LOCATIONS))
+        name = LOCATIONS[place]["name"]
+        ctx = {"template": f"你來到{name}。", "names": [], "period": 0, "weather": "晴", "place": place, "arrived": False,
+               "absent": [], "others": [], "mode": "return", "env_changed": True}
+        desc = LOCATIONS[place]["day"]
+        nod = f"你又步入{name}，" + desc[:5] + "依舊。"
+        self.assertIsNotNone(check(nod, ctx)[0], check(nod, ctx)[1])
+        self.assertEqual(check(f"你步入{name}。" + desc, ctx)[1], "scene_reintro")
 
     def test_weather_cannot_be_rewritten(self):
         w, beats = opening()

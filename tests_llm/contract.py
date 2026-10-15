@@ -101,6 +101,9 @@ def audit(text, ctx: dict, w) -> list[str]:
         if not any("".join(said_q[i:j]) == q for i in range(len(said_q)) for j in range(i + 1, len(said_q) + 1)):
             out.append("dialogue")
             break
+    tpl_q = [flat(x) for x in QUOTE.findall(tpl)]
+    if "dialogue" not in out and any(q and not any(q in t for t in tpl_q) for q in said_q):
+        out.append("dialogue")           # 原文沒有的台詞：說書人替人多編了一句話
     if set(re.findall(r"\d+", text)) - set(re.findall(r"\d+", tpl)):
         out.append("digits")
     people = text
@@ -117,15 +120,20 @@ def audit(text, ctx: dict, w) -> list[str]:
             break
     if fresh(COMPANIONS):
         out.append("companions")
-    if fresh(TIME_CLASH[ctx["period"]]):
+    clash = TIME_CLASH[ctx["period"]]
+    if ctx.get("prev_period") is not None:   # 時辰剛變：兩個時辰都說得通的詞不算寫錯（交代轉換）
+        clash = [x for x in clash if x in TIME_CLASH[ctx["prev_period"]]]
+    if fresh(clash):
         out.append("time")
-    if fresh(WEATHER_CLASH.get(ctx["weather"], [])):
+    # 原文本身在講那種天氣（例如舊傷一下雨就疼）時，換個說法提到它不算改天氣
+    element = {"晴": "雨", "雨": "晴陽", "陰": "晴陽雨"}.get(ctx["weather"], "")
+    if not any(ch in tpl for ch in element) and fresh(WEATHER_CLASH.get(ctx["weather"], [])):
         out.append("weather")
     if not ctx["arrived"] and ("你來到" in said and "你來到" not in tpl or scene_overlap(said, ctx["place"]) > 0.3):
         out.append("scene_reintro")
     mode = ctx.get("mode")
     if mode in ("continue", "return") and (
-            not ctx.get("env_changed", True) and fresh(ENVIRONMENT)
+            not ctx.get("env_changed", True) and fresh([x for x in ENVIRONMENT if not set(x) & {c for c in "雨晴陽" if c in tpl}])
             or mode == "continue" and LOCATIONS[ctx["place"]]["name"] in said and LOCATIONS[ctx["place"]]["name"] not in tpl):
         out.append("scene_repaint")      # 一直待在同一個地方，卻又重新畫了一次場景
     if fresh(EVENTS):
