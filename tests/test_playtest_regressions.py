@@ -213,6 +213,28 @@ class TimeAndWeatherTests(unittest.TestCase):
         plain = dict(base, template="你和吳伯聊起他那條瘸腿，他說是當年留下的。")
         self.assertEqual(check("細雨落下，你和吳伯聊起他那條瘸腿，他說是當年留下的。", plain)[1], "weather")
 
+    def test_telling_the_change_of_time_may_name_the_old_time(self):
+        """筆電實測誤擋：提示請模型帶一句「從深夜到了清晨」，模型照做卻因為寫到「深夜」被擋。
+        同一段也寫到現在的時辰＝在交代轉換，可以；只寫舊的時辰照樣擋。"""
+        base = {"template": "你來到窄巷。", "names": [], "period": 0, "weather": "晴", "place": "alley", "arrived": False,
+                "absent": [], "others": [], "mode": "return", "env_changed": True, "shift": "時辰從深夜到了清晨",
+                "prev_period": 5}
+        self.assertIsNotNone(check("從深夜到清晨，你步入窄巷，巷影依舊熟悉。", base)[0])
+        self.assertEqual(check("深夜裡，你步入窄巷，巷影依舊熟悉。", base)[1], "time")
+        self.assertEqual(check("從深夜到清晨，你步入窄巷，巷影依舊熟悉。", dict(base, prev_period=None))[1], "time")
+
+    def test_coming_back_may_nod_at_a_known_feature(self):
+        """筆電實測誤擋：剛回到的地方順口帶一句已知的景物，不是重新介紹；整段描寫照樣擋。"""
+        name = LOCATIONS["temple"]["name"] if "temple" in LOCATIONS else None
+        place = "temple" if name else next(iter(LOCATIONS))
+        name = LOCATIONS[place]["name"]
+        ctx = {"template": f"你來到{name}。", "names": [], "period": 0, "weather": "晴", "place": place, "arrived": False,
+               "absent": [], "others": [], "mode": "return", "env_changed": True}
+        desc = LOCATIONS[place]["day"]
+        nod = f"你又步入{name}，" + desc[:5] + "依舊。"
+        self.assertIsNotNone(check(nod, ctx)[0], check(nod, ctx)[1])
+        self.assertEqual(check(f"你步入{name}。" + desc, ctx)[1], "scene_reintro")
+
     def test_weather_cannot_be_rewritten(self):
         w, beats = opening()
         ctx = Narrator.build_context(w, beats, None)

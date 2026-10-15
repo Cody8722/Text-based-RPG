@@ -261,7 +261,12 @@ def check(output, ctx: dict) -> tuple[str | None, str | None]:
     said = narration_only(text)
     new = lambda words: [x for x in words if x in said and x not in template]  # noqa: E731
     if "period" in ctx:
-        bad = [g for g, ws in TIME_WORDS.items() if g not in TIME_ALLOWED[ctx["period"]] and new(ws)]
+        allowed = set(TIME_ALLOWED[ctx["period"]])
+        prev = ctx.get("prev_period")
+        # 時辰剛變（提示也請模型帶一句）：同一段寫到現在的時辰時，提到上一個時辰是在交代轉換，不算寫錯
+        if prev is not None and any(new(TIME_WORDS[g]) for g in TIME_ALLOWED[ctx["period"]] - {"daylight"}):
+            allowed |= TIME_ALLOWED[prev]
+        bad = [g for g, ws in TIME_WORDS.items() if g not in allowed and new(ws)]
         if bad:
             return None, "time"
     if not mentions_element(template, ctx.get("weather")) and new(WEATHER_CONTRADICTS.get(ctx.get("weather"), [])):
@@ -276,7 +281,9 @@ def check(output, ctx: dict) -> tuple[str | None, str | None]:
         again = ARRIVAL_WORDS + [v + here for v in ("來到", "走進", "踏進", "踏入", "走到")]
         # 「剛回到」的回合，片段本身就是抵達（你來到某處），換個說法講抵達不算重新介紹；照樣不能重寫地點描寫
         arrival_again = ctx.get("mode") != "return" and new(again)
-        if arrival_again or scene_overlap(said, ctx["place"]) > 0.2 or len(fresh_grams(said, template, scene_grams(ctx["place"]))) >= 2:
+        # 剛回到的地方，順口帶到一點已知的景物（「香火清涼」）可以；多了就是重新介紹
+        limit = 3 if ctx.get("mode") == "return" else 2
+        if arrival_again or scene_overlap(said, ctx["place"]) > 0.2 or len(fresh_grams(said, template, scene_grams(ctx["place"]))) >= limit:
             return None, "scene_reintro"
         # 場景只在第一次抵達時建立。之後同一個地方的回合：不再點名這個地方；
         # 時辰、天氣、光線只有在真的變了的回合才能寫（而且上面的時間／天氣檢查照樣守住寫得對不對）。
@@ -405,6 +412,7 @@ class Narrator:
             "arrived": mode == "establish",
             "env_changed": prev is None or bool(shift),
             "shift": "、".join(shift),
+            "prev_period": prev[1] if prev is not None and prev[1] != w.period else None,
             "on_stage": on_stage,
             "absent": mentioned,
             "others": [n["call"] for i, n in w.npcs.items() if i not in NPCS and n["call"] not in template],

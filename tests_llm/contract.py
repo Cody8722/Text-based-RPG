@@ -120,7 +120,10 @@ def audit(text, ctx: dict, w) -> list[str]:
             break
     if fresh(COMPANIONS):
         out.append("companions")
-    if fresh(TIME_CLASH[ctx["period"]]):
+    clash = TIME_CLASH[ctx["period"]]
+    if ctx.get("prev_period") is not None:   # 時辰剛變：兩個時辰都說得通的詞不算寫錯（交代轉換）
+        clash = [x for x in clash if x in TIME_CLASH[ctx["prev_period"]]]
+    if fresh(clash):
         out.append("time")
     # 原文本身在講那種天氣（例如舊傷一下雨就疼）時，換個說法提到它不算改天氣
     element = {"晴": "雨", "雨": "晴陽", "陰": "晴陽雨"}.get(ctx["weather"], "")

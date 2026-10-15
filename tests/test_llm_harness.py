@@ -81,7 +81,9 @@ def violations_for(ctx, w):
         "digits": tpl + "他順手塞給你99文。",
         "cast_extra": tpl + f"{stranger}也坐在一旁。",
         "companions": tpl + "你們幾個人圍在一起。",
-        "time": tpl + next(x for x in contract.TIME_CLASH[ctx["period"]] if x not in tpl) + "照在地上。",
+        # 時辰剛變時，上一個時辰說得通的詞是在交代轉換；挑兩個時辰都不對的詞
+        "time": tpl + next(x for x in contract.TIME_CLASH[ctx["period"]] if x not in tpl and (
+            ctx.get("prev_period") is None or x in contract.TIME_CLASH[ctx["prev_period"]])) + "照在地上。",
         # 原文本身就在講那種天氣時，提到它不算改天氣（同一條規則），這時不產生這一類
         **({} if any(ch in tpl for ch in {"晴": "雨", "雨": "晴陽", "陰": "晴陽雨"}.get(ctx["weather"], "")) else
            {"weather": tpl + next(x for x in contract.WEATHER_CLASH[ctx["weather"]] if x not in tpl) + "的景象。"}),
