@@ -111,6 +111,21 @@ _SUN = ["陽光普照", "艷陽", "晴空", "萬里無雲", "陽光燦爛", "晴
 WEATHER_CONTRADICTS = {"晴": _RAIN, "雨": _SUN, "陰": _SUN + ["下雨", "雨絲", "細雨", "大雨", "撐傘"]}
 # 「這一刻的環境」用語：時辰、光線、天氣。沿用上面的時間與天氣詞表，不另立黑名單。
 ENV_WORDS = sorted({x for ws in TIME_WORDS.values() for x in ws} | set(_RAIN) | set(_SUN))
+# 跟這個天氣相反的那種天氣的「元素字」。原文本身就在講它（例如某人的舊傷一下雨就疼）時，
+# 說書人換個說法講到它，不是把現在的天氣改掉。
+WEATHER_ELEMENT = {"晴": "雨", "雨": "晴陽", "陰": "晴陽雨"}
+
+
+def mentions_element(template: str, weather) -> bool:
+    return any(ch in template for ch in WEATHER_ELEMENT.get(weather, ""))
+
+
+def env_words_for(template: str) -> list[str]:
+    """環境用語，扣掉原文自己就在講的那種天氣（原文說舊傷一下雨就疼，改寫成「陰雨」不是重畫環境）。"""
+    talked = {ch for ch in "雨晴陽" if ch in template}
+    return [x for x in ENV_WORDS if not talked & set(x)]
+
+
 COMPANION_WORDS = ["你們幾", "你們一行", "你們兩", "你們三", "同伴", "同行的", "一行人", "你們一夥"]
 # 「只被提到的人」後面緊跟著這些動作 → 被寫成在場了（實測：句子裡別人的「身邊」不能算，要緊跟在名字後面）
 PRESENCE_WORDS = ["走到", "走過來", "走了過來", "走進", "走來", "站在", "坐在", "來到", "湊過來", "湊近", "朝你", "向你",
@@ -152,6 +167,12 @@ def quotes_kept(template: str, text: str) -> bool:
         if not any("".join(out[i:j]) == q for i in range(len(out)) for j in range(i + 1, min(len(out), i + 4) + 1)):
             return False
     return True
+
+
+def quotes_from_template(template: str, text: str) -> bool:
+    """輸出裡的每一段「」都必須來自原文的台詞（可以是拆開的其中一段）：說書人不能替任何人多編一句話。"""
+    said = [_PUNCT.sub("", q) for q in _QUOTE.findall(template)]
+    return all(any(q in s for s in said) for q in (_PUNCT.sub("", x) for x in _QUOTE.findall(text)) if q)
 
 
 def acts_on_stage(text: str, name: str) -> bool:
@@ -220,7 +241,7 @@ def check(output, ctx: dict) -> tuple[str | None, str | None]:
     if len(text) > tlen * 2 + 80:
         return None, "too_long"
     # 台詞一字不改（多加字、少字、換字都不行；可以拆成連續幾段）
-    if not quotes_kept(template, text):
+    if not quotes_kept(template, text) or not quotes_from_template(template, text):
         return None, "dialogue"
     allowed_digits = set(_DIGITS.findall(template))
     if any(d not in allowed_digits for d in _DIGITS.findall(text)):
@@ -243,7 +264,7 @@ def check(output, ctx: dict) -> tuple[str | None, str | None]:
         bad = [g for g, ws in TIME_WORDS.items() if g not in TIME_ALLOWED[ctx["period"]] and new(ws)]
         if bad:
             return None, "time"
-    if new(WEATHER_CONTRADICTS.get(ctx.get("weather"), [])):
+    if not mentions_element(template, ctx.get("weather")) and new(WEATHER_CONTRADICTS.get(ctx.get("weather"), [])):
         return None, "weather"
     if new(COMPANION_WORDS):
         return None, "companions"
@@ -261,7 +282,7 @@ def check(output, ctx: dict) -> tuple[str | None, str | None]:
         # 時辰、天氣、光線只有在真的變了的回合才能寫（而且上面的時間／天氣檢查照樣守住寫得對不對）。
         if ctx.get("mode") == "continue" and new([here]):
             return None, "scene_repaint"
-        if ctx.get("mode") in ("continue", "return") and not ctx.get("env_changed", True) and new(ENV_WORDS):
+        if ctx.get("mode") in ("continue", "return") and not ctx.get("env_changed", True) and new(env_words_for(template)):
             return None, "scene_repaint"
     if new(EVENT_WORDS):
         return None, "invented_event"
@@ -354,8 +375,10 @@ class Narrator:
         template = "\n".join(b["text"] for b in rew)
         names = [n["call"] for n in w.npcs.values() if n["call"] in template]
         loc = w.player["location"]
-        here = {w.npcs[i]["call"] for i in w.present_npcs(loc)} | {b.get("speaker") and w.npcs[b["speaker"]]["call"]
-                                                                 for b in rew if b.get("speaker") in w.npcs}
+        # 在場＝現在在這裡的人，加上片段發生當下在場的人（動作花了時間，有人照作息走了，片段裡他仍在場）
+        was_here = {i for b in rew for i in b.get("here", []) if i in w.npcs}
+        here = {w.npcs[i]["call"] for i in set(w.present_npcs(loc)) | was_here} | {
+            b.get("speaker") and w.npcs[b["speaker"]]["call"] for b in rew if b.get("speaker") in w.npcs}
         on_stage = [x for x in names if x in here]
         mentioned = [x for x in names if x not in here]
         place = LOCATIONS[loc]

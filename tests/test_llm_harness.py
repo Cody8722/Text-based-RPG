@@ -82,7 +82,9 @@ def violations_for(ctx, w):
         "cast_extra": tpl + f"{stranger}也坐在一旁。",
         "companions": tpl + "你們幾個人圍在一起。",
         "time": tpl + next(x for x in contract.TIME_CLASH[ctx["period"]] if x not in tpl) + "照在地上。",
-        "weather": tpl + next(x for x in contract.WEATHER_CLASH[ctx["weather"]] if x not in tpl) + "的景象。",
+        # 原文本身就在講那種天氣時，提到它不算改天氣（同一條規則），這時不產生這一類
+        **({} if any(ch in tpl for ch in {"晴": "雨", "雨": "晴陽", "陰": "晴陽雨"}.get(ctx["weather"], "")) else
+           {"weather": tpl + next(x for x in contract.WEATHER_CLASH[ctx["weather"]] if x not in tpl) + "的景象。"}),
         "invented_event": tpl + "遠處有人昏倒了。",
         "simplified": tpl + "这时风大了。",
         "format": "{" + tpl,
